@@ -250,6 +250,7 @@ curl http://localhost:8080/api/unsubscribe/YOUR-TOKEN-HERE
 | GET | `/api/unsubscribe/{token}` | Unsubscribe | 200 | 404 (bad token) |
 | GET | `/api/subscriptions?email={email}` | List active subscriptions | 200 | 400 (bad email) |
 | GET | `/` | HTML subscription page | 200 | — |
+| GET | `/metrics` | Prometheus metrics | 200 | — |
 
 ## Extras Implemented
 
@@ -257,6 +258,7 @@ curl http://localhost:8080/api/unsubscribe/YOUR-TOKEN-HERE
 - **GitHub Actions CI** — runs `go build`, `go test`, and `go vet` on every push to `main`/`master` and on pull requests
 - **Graceful shutdown** — the server listens for SIGINT/SIGTERM signals, stops the scanner goroutine via `context.Context`, and gives in-flight HTTP requests 5 seconds to complete before exiting
 - **Redis caching** — GitHub API responses are cached with a configurable TTL (default 10 minutes). The `CachedClient` wrapper checks Redis before making API calls, reducing rate limit usage. Logs `Cache HIT` / `Cache MISS` for observability. App works without Redis (graceful fallback with a warning log)
+- **Prometheus metrics** — `/metrics` endpoint exposes: HTTP request counts and duration by method/path/status, subscriptions created/confirmed/unsubscribed, scanner run cycles, releases detected, notifications sent, GitHub API cache hit/miss rates
 
 ## Project Structure
 
@@ -282,6 +284,7 @@ curl http://localhost:8080/api/unsubscribe/YOUR-TOKEN-HERE
 │   ├── github/client.go             # GitHub API client with 429 retry
 │   ├── github/cached_client.go      # Redis-cached wrapper for GitHub client
 │   ├── cache/cache.go               # Redis cache layer (get/set with TTL)
+│   ├── metrics/metrics.go           # Prometheus counters, histograms, and Gin middleware
 │   ├── scanner/scanner.go           # Background release checker goroutine
 │   └── notifier/notifier.go         # SMTP email sender
 └── postman_collection.json          # Importable Postman collection for all endpoints
