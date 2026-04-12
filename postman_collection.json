@@ -186,6 +186,19 @@
 				},
 				"description": "Test: nonexistent confirmation token returns 404."
 			}
+		},
+		{
+			"name": "Prometheus Metrics",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/metrics",
+					"host": ["{{base_url}}"],
+					"path": ["metrics"]
+				},
+				"description": "Prometheus metrics endpoint. Shows HTTP request counts, subscription/scanner/notification counters, GitHub API cache hit/miss rates, and Go runtime stats."
+			}
 		}
 	]
 }
