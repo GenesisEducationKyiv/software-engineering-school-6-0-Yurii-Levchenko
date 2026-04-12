@@ -17,6 +17,8 @@ type Config struct {
 	SMTPFrom         string
 	GitHubToken      string
 	ScanIntervalSecs int
+	RedisURL         string
+	CacheTTLSeconds  int
 }
 
 // Load reads all config from environment variables with sensible defaults
@@ -32,6 +34,8 @@ func Load() *Config {
 		SMTPFrom:         getEnv("SMTP_FROM", "noreply@github-notifier.local"),
 		GitHubToken:      getEnv("GITHUB_TOKEN", ""),
 		ScanIntervalSecs: getEnvInt("SCAN_INTERVAL_SECONDS", 300),
+		RedisURL:         getEnv("REDIS_URL", "redis://localhost:6379/0"),
+		CacheTTLSeconds:  getEnvInt("CACHE_TTL_SECONDS", 600),
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github-release-notifier/internal/cache"
 	"github-release-notifier/internal/config"
 	"github-release-notifier/internal/github"
 	"github-release-notifier/internal/handler"
@@ -49,18 +50,43 @@ func main() {
 	}
 	log.Println("Migrations completed")
 
+	// --- Redis Cache ---
+	log.Println("Connecting to Redis...")
+	ttl := time.Duration(cfg.CacheTTLSeconds) * time.Second
+	redisCache, err := cache.New(cfg.RedisURL, ttl)
+	if err != nil {
+		log.Printf("WARNING: Redis not available, running without cache: %v", err)
+		redisCache = nil
+	} else {
+		defer redisCache.Close()
+		log.Printf("Redis connected (TTL: %v)", ttl)
+	}
+
 	// --- Initialize Dependencies ---
 	repo := repository.New(db)
 	ghClient := github.New(cfg.GitHubToken)
+
+	// wrap GitHub client with Redis cache if available
+	var ghService service.GitHubClient
+	var scannerGH scanner.ReleaseChecker
+	if redisCache != nil {
+		cachedGH := github.NewCachedClient(ghClient, redisCache)
+		ghService = cachedGH
+		scannerGH = cachedGH
+	} else {
+		ghService = ghClient
+		scannerGH = ghClient
+	}
+
 	emailNotifier := notifier.New(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUser, cfg.SMTPPass, cfg.SMTPFrom)
-	svc := service.New(repo, ghClient, emailNotifier, cfg.BaseURL)
+	svc := service.New(repo, ghService, emailNotifier, cfg.BaseURL)
 	h := handler.New(svc)
 
 	// --- Start Background Scanner with context for graceful shutdown ---
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	releaseScanner := scanner.New(repo, ghClient, emailNotifier, cfg.ScanIntervalSecs, cfg.BaseURL)
+	releaseScanner := scanner.New(repo, scannerGH, emailNotifier, cfg.ScanIntervalSecs, cfg.BaseURL)
 	go releaseScanner.Start(ctx)
 
 	// --- Setup Router ---
@@ -105,7 +131,7 @@ func main() {
 
 	log.Println("Shutting down gracefully...")
 
-	// Stop the scanner
+	// Stop scanner
 	cancel()
 
 	// Give the HTTP server 5 seconds to finish ongoing requests
@@ -115,7 +141,6 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Fatalf("Server forced to shutdown: %v", err)
 	}
-
 	log.Println("Server stopped")
 }
 
