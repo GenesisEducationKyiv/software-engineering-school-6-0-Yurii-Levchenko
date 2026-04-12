@@ -12,6 +12,7 @@ import (
 	"github-release-notifier/internal/cache"
 	"github-release-notifier/internal/config"
 	"github-release-notifier/internal/metrics"
+	"github-release-notifier/internal/middleware"
 	"github-release-notifier/internal/github"
 	"github-release-notifier/internal/handler"
 	"github-release-notifier/internal/notifier"
@@ -105,8 +106,9 @@ func main() {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
 
-	// API endpoints
+	// API endpoints (protected by API key if API_KEY env var is set)
 	api := router.Group("/api")
+	api.Use(middleware.APIKeyAuth(cfg.APIKey))
 	{
 		api.POST("/subscribe", h.Subscribe)
 		api.GET("/confirm/:token", h.ConfirmSubscription)

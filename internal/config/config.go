@@ -19,6 +19,7 @@ type Config struct {
 	ScanIntervalSecs int
 	RedisURL         string
 	CacheTTLSeconds  int
+	APIKey           string
 }
 
 // Load reads all config from environment variables with sensible defaults
@@ -36,6 +37,7 @@ func Load() *Config {
 		ScanIntervalSecs: getEnvInt("SCAN_INTERVAL_SECONDS", 300),
 		RedisURL:         getEnv("REDIS_URL", "redis://localhost:6379/0"),
 		CacheTTLSeconds:  getEnvInt("CACHE_TTL_SECONDS", 600),
+		APIKey:           getEnv("API_KEY", ""),
 	}
 }
 
