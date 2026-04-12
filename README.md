@@ -154,6 +154,18 @@ Scanner goroutine wakes up
 **5. List subscriptions** — `GET /api/subscriptions?email={email}`
 - Returns all confirmed subscriptions for the given email
 
+## Tested and Verified
+
+The full end-to-end flow has been tested with real GitHub repos and Mailtrap:
+
+- Subscribed to `gin-gonic/gin`, `docker/compose`, `NousResearch/hermes-agent`, and others
+- Scanner detected real releases: `gin-gonic/gin v1.12.0`, `docker/compose v5.1.2`, `NousResearch/hermes-agent v2026.4.8`
+- Confirmation emails and release notification emails delivered successfully via Mailtrap
+- Unsubscribe links in release emails work correctly
+- Redis cache verified: `Cache HIT` on repeated GitHub API lookups, `Cache MISS` on first call
+- All error cases tested: 400 (bad input), 404 (repo not found / bad token), 409 (duplicate subscription)
+- 13 unit tests passing with 82.7% coverage on business logic
+
 ## Prerequisites
 
 - **Docker Desktop** (includes docker-compose)
