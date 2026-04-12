@@ -20,6 +20,8 @@ Built with **Go**, **Gin**, **PostgreSQL**, **Docker**.
 
 7. **Error handling via custom types** — Business errors (`ErrRepoNotFound`, `ErrAlreadySubscribed`, etc.) are defined in the service layer. Handlers map them to HTTP status codes. This keeps the handler layer thin and the business logic testable.
 
+8. **Graceful shutdown** — The server listens for OS signals (SIGINT/SIGTERM) and shuts down cleanly: cancels the scanner goroutine via `context.Context`, then gives in-flight HTTP requests 5 seconds to complete. This prevents data corruption and lost requests during Docker stop or deployment.
+
 ## Architecture
 
 ```
@@ -131,8 +133,13 @@ This single command:
 - Runs database migrations automatically on startup
 - Starts the HTTP server on port 8080
 - Starts the background release scanner goroutine
+- Serves the HTML subscription page at http://localhost:8080
 
-### 4. Test the API
+### 4. Open the UI
+
+Navigate to **http://localhost:8080** in your browser. You can subscribe, view your active subscriptions, and unsubscribe — all from the web page.
+
+### 5. Or test via curl
 
 ```bash
 # Health check
@@ -164,6 +171,13 @@ curl http://localhost:8080/api/unsubscribe/YOUR-TOKEN-HERE
 | GET | `/api/confirm/{token}` | Confirm email subscription | 200 | 404 (bad token) |
 | GET | `/api/unsubscribe/{token}` | Unsubscribe | 200 | 404 (bad token) |
 | GET | `/api/subscriptions?email={email}` | List active subscriptions | 200 | 400 (bad email) |
+| GET | `/` | HTML subscription page | 200 | — |
+
+## Extras Implemented
+
+- **HTML subscription page** — served at `/`, dark-themed UI for subscribing, viewing subscriptions, and unsubscribing from the browser
+- **GitHub Actions CI** — runs `go build`, `go test` with coverage, and `golangci-lint` on every push to `main` and on pull requests
+- **Graceful shutdown** — the server listens for SIGINT/SIGTERM signals, stops the scanner goroutine via `context.Context`, and gives in-flight HTTP requests 5 seconds to complete before exiting
 
 ## Project Structure
 
@@ -173,6 +187,9 @@ curl http://localhost:8080/api/unsubscribe/YOUR-TOKEN-HERE
 ├── Dockerfile                       # Multi-stage build (golang → alpine, ~15MB final image)
 ├── docker-compose.yml               # Orchestrates app + PostgreSQL containers
 ├── .env.example                     # Template for environment variables
+├── .github/workflows/ci.yml         # GitHub Actions CI pipeline (test + lint)
+├── static/
+│   └── index.html                   # HTML subscription page served at /
 ├── migrations/
 │   ├── 000001_init.up.sql           # Creates subscriptions + repositories tables
 │   └── 000001_init.down.sql         # Drops tables (rollback)
