@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"context"
 	"fmt"
 	"github-release-notifier/internal/model"
 	"log"
@@ -47,8 +48,8 @@ func New(repo RepoStore, github ReleaseChecker, notifier ReleaseNotifier, interv
 }
 
 // Start begins the periodic release scanning in a loop
-// This runs forever. we call it with `go scanner.Start()` from main
-func (s *Scanner) Start() {
+// Accepts context for graceful shutdown — when context is cancelled, the scanner stops cleanly
+func (s *Scanner) Start(ctx context.Context) {
 	log.Printf("Scanner started, checking every %v", s.interval)
 
 	// runs immediately on startup, then on ticker
@@ -57,8 +58,14 @@ func (s *Scanner) Start() {
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		s.scan()
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("Scanner stopped gracefully")
+			return
+		case <-ticker.C:
+			s.scan()
+		}
 	}
 }
 
