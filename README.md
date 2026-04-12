@@ -166,6 +166,10 @@ The full end-to-end flow has been tested with real GitHub repos and Mailtrap:
 - All error cases tested: 400 (bad input), 404 (repo not found / bad token), 409 (duplicate subscription)
 - 13 unit tests passing with 82.7% coverage on business logic
 
+## API Documentation (Swagger)
+
+View the API spec in Swagger Editor: [Open in Swagger Editor](https://editor.swagger.io/?url=https://raw.githubusercontent.com/Yurii-Levchenko/github-release-notifier/master/swagger.yaml)
+
 ## Prerequisites
 
 - **Docker Desktop** (includes docker-compose)
