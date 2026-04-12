@@ -11,6 +11,7 @@ import (
 
 	"github-release-notifier/internal/cache"
 	"github-release-notifier/internal/config"
+	"github-release-notifier/internal/metrics"
 	"github-release-notifier/internal/github"
 	"github-release-notifier/internal/handler"
 	"github-release-notifier/internal/notifier"
@@ -91,9 +92,13 @@ func main() {
 
 	// --- Setup Router ---
 	router := gin.Default()
+	router.Use(metrics.GinMiddleware())
 
 	// serve HTML subscription page at root
 	router.StaticFile("/", "./static/index.html")
+
+	// Prometheus metrics endpoint
+	router.GET("/metrics", metrics.Handler())
 
 	// health check
 	router.GET("/health", func(c *gin.Context) {

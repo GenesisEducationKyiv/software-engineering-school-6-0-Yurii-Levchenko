@@ -2,6 +2,7 @@ package handler
 
 import (
 	"errors"
+	"github-release-notifier/internal/metrics"
 	"github-release-notifier/internal/model"
 	"github-release-notifier/internal/service"
 	"net/http"
@@ -31,6 +32,7 @@ func (h *Handler) Subscribe(c *gin.Context) {
 
 	err := h.svc.Subscribe(req.Email, req.Repo)
 	if err == nil {
+		metrics.SubscriptionsCreated.Inc()
 		c.JSON(http.StatusOK, gin.H{"message": "subscription created, check your email to confirm"})
 		return
 	}
@@ -56,6 +58,7 @@ func (h *Handler) ConfirmSubscription(c *gin.Context) {
 
 	err := h.svc.Confirm(token)
 	if err == nil {
+		metrics.SubscriptionsConfirmed.Inc()
 		c.JSON(http.StatusOK, gin.H{"message": "subscription confirmed"})
 		return
 	}
@@ -73,6 +76,7 @@ func (h *Handler) Unsubscribe(c *gin.Context) {
 
 	err := h.svc.Unsubscribe(token)
 	if err == nil {
+		metrics.Unsubscribes.Inc()
 		c.JSON(http.StatusOK, gin.H{"message": "unsubscribed successfully"})
 		return
 	}

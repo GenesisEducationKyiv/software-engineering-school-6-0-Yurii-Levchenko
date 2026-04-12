@@ -3,6 +3,7 @@ package scanner
 import (
 	"context"
 	"fmt"
+	"github-release-notifier/internal/metrics"
 	"github-release-notifier/internal/model"
 	"log"
 	"strings"
@@ -71,6 +72,7 @@ func (s *Scanner) Start(ctx context.Context) {
 
 // scan performs one check cycle for all active repos
 func (s *Scanner) scan() {
+	metrics.ScannerRunsTotal.Inc()
 	repos, err := s.repo.GetActiveRepos()
 	if err != nil {
 		log.Printf("Scanner: failed to get active repos: %v", err)
@@ -115,6 +117,7 @@ func (s *Scanner) checkRepo(repoStr string) {
 	}
 
 	log.Printf("Scanner: new release detected for %s: %s", repoStr, latestTag)
+	metrics.ReleasesDetected.Inc()
 
 	// update the tracking record
 	if err := s.repo.UpsertRepoTracking(repoStr, latestTag); err != nil {
@@ -134,6 +137,7 @@ func (s *Scanner) checkRepo(repoStr string) {
 		if err := s.notifier.SendReleaseNotification(sub.Email, repoStr, latestTag, unsubURL); err != nil {
 			log.Printf("Scanner: failed to notify %s about %s: %v", sub.Email, repoStr, err)
 		} else {
+			metrics.NotificationsSent.Inc()
 			log.Printf("Scanner: notified %s about %s %s", sub.Email, repoStr, latestTag)
 		}
 	}
