@@ -25,41 +25,103 @@ Built with **Go**, **Gin**, **PostgreSQL**, **Docker**.
 ## Architecture
 
 ```
-  User (curl / Postman / browser)
-              │
-              ▼
-  ┌───────────────────────┐
-  │   Gin HTTP Router     │  Receives HTTP requests, routes to handlers
-  │   (port 8080)         │
-  └───────────┬───────────┘
-              ▼
-  ┌───────────────────────┐
-  │   Handlers            │  Parses request, calls service, returns JSON response
-  └───────────┬───────────┘
-              ▼
-  ┌─────────────────────────────────┐
-  │   Service                       │  Business logic: validates input, orchestrates
-  │                                 │  calls to repository, GitHub API, and email notifier
-  └──┬────────────┬──────────────┬──┘
-     │            │              │
-     ▼            ▼              ▼
-  ┌───────────┐ ┌────────┐ ┌──────────┐
-  │Repository │ │GitHub  │ │Notifier  │
-  │   (SQL)   │ │Client  │ │(SMTP)    │
-  │           │ │(API)   │ │          │
-  └──┬────────┘ └────────┘ └──────────┘
-     ▼
-  ┌──────────┐
-  │PostgreSQL│
-  └──────────┘
+  ┌──────────────────────────────────────────────────────────────────────────────┐
+  │                             Docker Compose                                   │
+  │                                                                              │
+  │  ┌───────────────────┐   ┌─────────┐   ┌──────────────────────────────────┐  │
+  │  │    PostgreSQL     │   │  Redis  │   │           Go App                 │  │
+  │  │      :5432        │   │  :6379  │   │           :8080                  │  │
+  │  │                   │   │         │   │                                  │  │
+  │  │  Tables:          │   │ Cached: │   │  ┌──────────────────────────┐    │  │
+  │  │  - subscriptions  │   │ - repo  │   │  │   Gin HTTP Router        │    │  │
+  │  │  - repositories   │   │  exists │   │  │   + Static HTML at /     │    │  │
+  │  │                   │   │ - latest│   │  └─────────────┬────────────┘    │  │
+  │  │                   │   │  release│   │                │                 │  │
+  │  │                   │   │         │   │  ┌─────────────▼────────────┐    │  │
+  │  │                   │   │  TTL:   │   │  │       Handlers           │    │  │
+  │  │                   │   │  10 min │   │  └─────────────┬────────────┘    │  │
+  │  │                   │   │         │   │                │                 │  │
+  │  │                   │   │         │   │  ┌─────────────▼────────────┐    │  │
+  │  │                   │   │         │   │  │       Service            │    │  │
+  │  │                   │   │         │   │  │  (business logic layer)  │    │  │
+  │  │                   │   │         │   │  └──┬──────┬──────────┬─────┘    │  │
+  │  │                   │   │         │   │     │      │          │          │  │
+  │  │                   │   │         │   │     ▼      ▼          ▼          │  │
+  │  │                   │◄──┼─────────┼───┼─ Repo   Cached     Notifier      │  │
+  │  │                   │   │         │◄──┼─ sitory  GitHub     (SMTP)       │  │
+  │  │                   │   │         │   │          Client        │         │  │
+  │  └───────────────────┘   └─────────┘   │            │           │         │  │
+  │                                        │            ▼           ▼         │  │
+  │                                        │       GitHub API   Mailtrap      │  │
+  │                                        │                                  │  │
+  │                                        │  ┌──────────────────────────┐    │  │
+  │                                        │  │  Scanner (goroutine)     │    │  │
+  │                                        │  │  Polling loop: 5 min     │    │  │
+  │                                        │  │  Uses: CachedGitHub,     │    │  │
+  │                                        │  │  Repository, Notifier    │    │  │
+  │                                        │  │  Stops via context.Ctx   │    │  │
+  │                                        │  └──────────────────────────┘    │  │
+  │                                        └──────────────────────────────────┘  │
+  └──────────────────────────────────────────────────────────────────────────────┘
+                                      ▲
+                                      │
+                          User (browser / curl / Postman)
+                          http://localhost:8080
+```
 
-  Background goroutine:
-  ┌─────────────────────────────────────────────────────────┐
-  │ Scanner: polling loop that runs every 5 minutes.        │
-  │ Checks GitHub API for new releases of tracked repos.    │
-  │ If new release detected → updates DB → sends emails     │
-  │ to all confirmed subscribers.                           │
-  └─────────────────────────────────────────────────────────┘
+### Data Flow: Subscribe Request
+```
+User → POST /api/subscribe {"email":"...", "repo":"owner/repo"}
+         │
+         ▼
+      Handler: parse JSON body
+         │
+         ▼
+      Service: validate email → validate repo format
+         │
+         ▼
+      CachedGitHub: Redis has "repo_exists:owner/repo"?
+         ├── Cache HIT → return cached result (skip GitHub API)
+         └── Cache MISS → call GitHub API → store in Redis (TTL 10 min)
+         │
+         ▼
+      Repository: check DB for duplicate (email + repo)
+         │
+         ▼
+      Repository: INSERT subscription (confirmed=false, token=UUID)
+         │
+         ▼
+      Notifier: send confirmation email via SMTP
+         │
+         ▼
+      Return 200 {"message": "subscription created"}
+```
+
+### Data Flow: Scanner Cycle (every 5 minutes)
+```
+Scanner goroutine wakes up
+         │
+         ▼
+      Repository: SELECT DISTINCT repo FROM subscriptions WHERE confirmed=true
+         │
+         ▼
+      For each repo:
+         │
+         ▼
+      CachedGitHub: Redis has "latest_release:owner/repo"?
+         ├── Cache HIT → use cached tag
+         └── Cache MISS → call GitHub API → store in Redis (TTL 10 min)
+         │
+         ▼
+      Repository: compare tag with last_seen_tag
+         ├── Same tag → skip
+         └── New tag → UPDATE last_seen_tag
+                          │
+                          ▼
+                       Repository: get all subscribers for this repo
+                          │
+                          ▼
+                       Notifier: send release email to each subscriber
 ```
 
 ### How It Works
@@ -176,8 +238,9 @@ curl http://localhost:8080/api/unsubscribe/YOUR-TOKEN-HERE
 ## Extras Implemented
 
 - **HTML subscription page** — served at `/`, dark-themed UI for subscribing, viewing subscriptions, and unsubscribing from the browser
-- **GitHub Actions CI** — runs `go build`, `go test` with coverage, and `golangci-lint` on every push to `main` and on pull requests
+- **GitHub Actions CI** — runs `go build`, `go test`, and `go vet` on every push to `main`/`master` and on pull requests
 - **Graceful shutdown** — the server listens for SIGINT/SIGTERM signals, stops the scanner goroutine via `context.Context`, and gives in-flight HTTP requests 5 seconds to complete before exiting
+- **Redis caching** — GitHub API responses are cached with a configurable TTL (default 10 minutes). The `CachedClient` wrapper checks Redis before making API calls, reducing rate limit usage. Logs `Cache HIT` / `Cache MISS` for observability. App works without Redis (graceful fallback with a warning log)
 
 ## Project Structure
 
@@ -185,7 +248,7 @@ curl http://localhost:8080/api/unsubscribe/YOUR-TOKEN-HERE
 ├── main.go                          # Entry point: wires dependencies, starts server + scanner
 ├── go.mod / go.sum                  # Dependencies
 ├── Dockerfile                       # Multi-stage build (golang → alpine, ~15MB final image)
-├── docker-compose.yml               # Orchestrates app + PostgreSQL containers
+├── docker-compose.yml               # Orchestrates app + PostgreSQL + Redis containers
 ├── .env.example                     # Template for environment variables
 ├── .github/workflows/ci.yml         # GitHub Actions CI pipeline (test + lint)
 ├── static/
@@ -201,6 +264,8 @@ curl http://localhost:8080/api/unsubscribe/YOUR-TOKEN-HERE
 │   ├── service/service_test.go      # Unit tests (13 tests, 82% coverage)
 │   ├── repository/repository.go     # Database layer — SQL queries with sqlx
 │   ├── github/client.go             # GitHub API client with 429 retry
+│   ├── github/cached_client.go      # Redis-cached wrapper for GitHub client
+│   ├── cache/cache.go               # Redis cache layer (get/set with TTL)
 │   ├── scanner/scanner.go           # Background release checker goroutine
 │   └── notifier/notifier.go         # SMTP email sender
 └── postman_collection.json          # Importable Postman collection for all endpoints
@@ -233,3 +298,5 @@ Tests use Go interfaces with mock implementations — no database or network req
 | `SMTP_FROM` | No | `noreply@github-notifier.local` | Sender email address |
 | `GITHUB_TOKEN` | No | — | GitHub token (60 → 5000 req/hr) |
 | `SCAN_INTERVAL_SECONDS` | No | `300` | Scanner polling interval in seconds |
+| `REDIS_URL` | No | `redis://redis:6379/0` | Redis connection URL (app works without it) |
+| `CACHE_TTL_SECONDS` | No | `600` | Cache TTL for GitHub API responses (10 min) |
