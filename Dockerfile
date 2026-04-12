@@ -26,6 +26,8 @@ WORKDIR /app
 COPY --from=builder /app/server .
 # Copy migrations (needed at runtime)
 COPY --from=builder /app/migrations ./migrations
+# Copy static files (HTML page)
+COPY --from=builder /app/static ./static
 
 EXPOSE 8080
 

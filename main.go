@@ -1,7 +1,13 @@
 package main
 
 import (
+	"context"
 	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github-release-notifier/internal/config"
 	"github-release-notifier/internal/github"
@@ -44,19 +50,24 @@ func main() {
 	log.Println("Migrations completed")
 
 	// --- Initialize Dependencies ---
-	// manual dependency injection
 	repo := repository.New(db)
 	ghClient := github.New(cfg.GitHubToken)
 	emailNotifier := notifier.New(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUser, cfg.SMTPPass, cfg.SMTPFrom)
 	svc := service.New(repo, ghClient, emailNotifier, cfg.BaseURL)
 	h := handler.New(svc)
 
-	// --- Start Background Scanner (goroutine) ---
+	// --- Start Background Scanner with context for graceful shutdown ---
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	releaseScanner := scanner.New(repo, ghClient, emailNotifier, cfg.ScanIntervalSecs, cfg.BaseURL)
-	go releaseScanner.Start() // `go` launches it in the background
+	go releaseScanner.Start(ctx)
 
 	// --- Setup Router ---
 	router := gin.Default()
+
+	// serve HTML subscription page at root
+	router.StaticFile("/", "./static/index.html")
 
 	// health check
 	router.GET("/health", func(c *gin.Context) {
@@ -72,11 +83,40 @@ func main() {
 		api.GET("/subscriptions", h.GetSubscriptions)
 	}
 
-	// --- Start Server ---
-	log.Printf("Server starting on port %s", cfg.AppPort)
-	if err := router.Run(":" + cfg.AppPort); err != nil {
-		log.Fatalf("Failed to start server: %v", err)
+	// --- Graceful Shutdown ---
+	// Create HTTP server manually (instead of router.Run) so we can shut it down gracefully
+	srv := &http.Server{
+		Addr:    ":" + cfg.AppPort,
+		Handler: router,
 	}
+
+	// Start server in a goroutine
+	go func() {
+		log.Printf("Server starting on port %s", cfg.AppPort)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server failed: %v", err)
+		}
+	}()
+
+	// Wait for interrupt signal (Ctrl+C or Docker stop)
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	log.Println("Shutting down gracefully...")
+
+	// Stop the scanner
+	cancel()
+
+	// Give the HTTP server 5 seconds to finish ongoing requests
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Fatalf("Server forced to shutdown: %v", err)
+	}
+
+	log.Println("Server stopped")
 }
 
 // applies all pending SQL migrations
