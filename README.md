@@ -259,6 +259,7 @@ curl http://localhost:8080/api/unsubscribe/YOUR-TOKEN-HERE
 - **Graceful shutdown** — the server listens for SIGINT/SIGTERM signals, stops the scanner goroutine via `context.Context`, and gives in-flight HTTP requests 5 seconds to complete before exiting
 - **Redis caching** — GitHub API responses are cached with a configurable TTL (default 10 minutes). The `CachedClient` wrapper checks Redis before making API calls, reducing rate limit usage. Logs `Cache HIT` / `Cache MISS` for observability. App works without Redis (graceful fallback with a warning log)
 - **Prometheus metrics** — `/metrics` endpoint exposes: HTTP request counts and duration by method/path/status, subscriptions created/confirmed/unsubscribed, scanner run cycles, releases detected, notifications sent, GitHub API cache hit/miss rates
+- **API key authentication** — set `API_KEY` env var to protect all `/api/*` endpoints with `X-API-Key` header. Returns 401 (missing) or 403 (invalid). Disabled by default (empty `API_KEY`) for easy development. Public endpoints (`/`, `/health`, `/metrics`) are never protected
 
 ## Project Structure
 
@@ -285,6 +286,7 @@ curl http://localhost:8080/api/unsubscribe/YOUR-TOKEN-HERE
 │   ├── github/cached_client.go      # Redis-cached wrapper for GitHub client
 │   ├── cache/cache.go               # Redis cache layer (get/set with TTL)
 │   ├── metrics/metrics.go           # Prometheus counters, histograms, and Gin middleware
+│   ├── middleware/auth.go           # API key authentication middleware
 │   ├── scanner/scanner.go           # Background release checker goroutine
 │   └── notifier/notifier.go         # SMTP email sender
 └── postman_collection.json          # Importable Postman collection for all endpoints
@@ -319,3 +321,4 @@ Tests use Go interfaces with mock implementations — no database or network req
 | `SCAN_INTERVAL_SECONDS` | No | `300` | Scanner polling interval in seconds |
 | `REDIS_URL` | No | `redis://redis:6379/0` | Redis connection URL (app works without it) |
 | `CACHE_TTL_SECONDS` | No | `600` | Cache TTL for GitHub API responses (10 min) |
+| `API_KEY` | No | — | API key for endpoint protection (empty = auth disabled) |
