@@ -14,7 +14,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version-file: 'go.mod'
 
       - name: Download dependencies
         run: go mod download
@@ -38,11 +38,17 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version-file: 'go.mod'
 
+      # Build golangci-lint from source with the runner's Go (via GOTOOLCHAIN=auto)
+      # so the linter binary's Go version matches the code's targeted Go version.
+      # Default install-mode 'binary' downloads a pre-built golangci-lint that
+      # was compiled with whatever Go the maintainers used at release time,
+      # which can be older than our go.mod and cause "lower than targeted" errors.
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
           version: v1.64.8
+          install-mode: 'goinstall'
         env:
           GOTOOLCHAIN: auto
