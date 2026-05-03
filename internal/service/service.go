@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"github-release-notifier/internal/model"
 	"regexp"
@@ -23,7 +24,7 @@ type RepositoryStore interface {
 
 // GitHubClient defines the interface for GitHub API operations
 type GitHubClient interface {
-	CheckRepoExists(owner, repo string) (bool, error)
+	CheckRepoExists(ctx context.Context, owner, repo string) (bool, error)
 }
 
 // EmailNotifier defines the interface for sending emails
@@ -83,7 +84,9 @@ func ParseRepo(repoStr string) (string, string, error) {
 }
 
 // Subscribe handles the subscription creation logic
-func (s *Service) Subscribe(email, repoStr string) error {
+// The ctx is propagated to the GitHub API call so the request can be canceled
+// if the originating HTTP client disconnects or the server is shutting down
+func (s *Service) Subscribe(ctx context.Context, email, repoStr string) error {
 	// 1. Validate email
 	if !ValidateEmail(email) {
 		return ErrInvalidEmail
@@ -96,7 +99,7 @@ func (s *Service) Subscribe(email, repoStr string) error {
 	}
 
 	// 3. Check if repo exists on GitHub
-	exists, err := s.github.CheckRepoExists(owner, repo)
+	exists, err := s.github.CheckRepoExists(ctx, owner, repo)
 	// if GitHub responds 200 then repo exists so returns true
 	if err != nil {
 		return fmt.Errorf("failed to check repository: %w", err)

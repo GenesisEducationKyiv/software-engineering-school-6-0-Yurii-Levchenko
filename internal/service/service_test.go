@@ -1,6 +1,8 @@
 package service
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"github-release-notifier/internal/model"
 	"testing"
@@ -82,7 +84,7 @@ type mockGitHub struct {
 	existingRepos map[string]bool
 }
 
-func (m *mockGitHub) CheckRepoExists(owner, repo string) (bool, error) {
+func (m *mockGitHub) CheckRepoExists(_ context.Context, owner, repo string) (bool, error) {
 	key := owner + "/" + repo
 	return m.existingRepos[key], nil
 }
@@ -101,8 +103,8 @@ func (m *mockNotifier) SendConfirmationEmail(to, confirmURL string) error {
 func setupTestService() (*Service, *mockRepo, *mockGitHub, *mockNotifier) {
 	repo := newMockRepo()
 	gh := &mockGitHub{existingRepos: map[string]bool{
-		"golang/go":       true,
-		"facebook/react":  true,
+		"golang/go":      true,
+		"facebook/react": true,
 	}}
 	notif := &mockNotifier{}
 	svc := New(repo, gh, notif, "http://localhost:8080")
@@ -171,7 +173,7 @@ func TestParseRepo(t *testing.T) {
 func TestSubscribe_Success(t *testing.T) {
 	svc, repo, _, notif := setupTestService()
 
-	err := svc.Subscribe("user@example.com", "golang/go")
+	err := svc.Subscribe(context.Background(), "user@example.com", "golang/go")
 	if err != nil {
 		t.Fatalf("Subscribe failed: %v", err)
 	}
@@ -197,8 +199,8 @@ func TestSubscribe_Success(t *testing.T) {
 func TestSubscribe_InvalidEmail(t *testing.T) {
 	svc, _, _, _ := setupTestService()
 
-	err := svc.Subscribe("notanemail", "golang/go")
-	if err != ErrInvalidEmail {
+	err := svc.Subscribe(context.Background(), "notanemail", "golang/go")
+	if !errors.Is(err, ErrInvalidEmail) {
 		t.Errorf("Expected ErrInvalidEmail, got %v", err)
 	}
 }
@@ -206,8 +208,8 @@ func TestSubscribe_InvalidEmail(t *testing.T) {
 func TestSubscribe_InvalidRepoFormat(t *testing.T) {
 	svc, _, _, _ := setupTestService()
 
-	err := svc.Subscribe("user@example.com", "invalid-format")
-	if err != ErrInvalidRepoFormat {
+	err := svc.Subscribe(context.Background(), "user@example.com", "invalid-format")
+	if !errors.Is(err, ErrInvalidRepoFormat) {
 		t.Errorf("Expected ErrInvalidRepoFormat, got %v", err)
 	}
 }
@@ -215,8 +217,8 @@ func TestSubscribe_InvalidRepoFormat(t *testing.T) {
 func TestSubscribe_RepoNotFound(t *testing.T) {
 	svc, _, _, _ := setupTestService()
 
-	err := svc.Subscribe("user@example.com", "nonexistent/repo")
-	if err != ErrRepoNotFound {
+	err := svc.Subscribe(context.Background(), "user@example.com", "nonexistent/repo")
+	if !errors.Is(err, ErrRepoNotFound) {
 		t.Errorf("Expected ErrRepoNotFound, got %v", err)
 	}
 }
@@ -225,14 +227,14 @@ func TestSubscribe_AlreadySubscribed(t *testing.T) {
 	svc, _, _, _ := setupTestService()
 
 	// first subscription
-	err := svc.Subscribe("user@example.com", "golang/go")
+	err := svc.Subscribe(context.Background(), "user@example.com", "golang/go")
 	if err != nil {
 		t.Fatalf("First subscribe failed: %v", err)
 	}
 
 	// duplicate subscription
-	err = svc.Subscribe("user@example.com", "golang/go")
-	if err != ErrAlreadySubscribed {
+	err = svc.Subscribe(context.Background(), "user@example.com", "golang/go")
+	if !errors.Is(err, ErrAlreadySubscribed) {
 		t.Errorf("Expected ErrAlreadySubscribed, got %v", err)
 	}
 }
@@ -241,7 +243,7 @@ func TestConfirm_Success(t *testing.T) {
 	svc, repo, _, _ := setupTestService()
 
 	// create a subscription first
-	_ = svc.Subscribe("user@example.com", "golang/go")
+	_ = svc.Subscribe(context.Background(), "user@example.com", "golang/go")
 	sub, _ := repo.GetSubscriptionByEmailAndRepo("user@example.com", "golang/go")
 
 	// confirm it
@@ -261,7 +263,7 @@ func TestConfirm_TokenNotFound(t *testing.T) {
 	svc, _, _, _ := setupTestService()
 
 	err := svc.Confirm("nonexistent-token")
-	if err != ErrTokenNotFound {
+	if !errors.Is(err, ErrTokenNotFound) {
 		t.Errorf("Expected ErrTokenNotFound, got %v", err)
 	}
 }
@@ -269,7 +271,7 @@ func TestConfirm_TokenNotFound(t *testing.T) {
 func TestConfirm_Idempotent(t *testing.T) {
 	svc, repo, _, _ := setupTestService()
 
-	_ = svc.Subscribe("user@example.com", "golang/go")
+	_ = svc.Subscribe(context.Background(), "user@example.com", "golang/go")
 	sub, _ := repo.GetSubscriptionByEmailAndRepo("user@example.com", "golang/go")
 
 	// confirm twice. should not error
@@ -283,7 +285,7 @@ func TestConfirm_Idempotent(t *testing.T) {
 func TestUnsubscribe_Success(t *testing.T) {
 	svc, repo, _, _ := setupTestService()
 
-	_ = svc.Subscribe("user@example.com", "golang/go")
+	_ = svc.Subscribe(context.Background(), "user@example.com", "golang/go")
 	sub, _ := repo.GetSubscriptionByEmailAndRepo("user@example.com", "golang/go")
 
 	err := svc.Unsubscribe(sub.Token)
@@ -302,7 +304,7 @@ func TestUnsubscribe_TokenNotFound(t *testing.T) {
 	svc, _, _, _ := setupTestService()
 
 	err := svc.Unsubscribe("nonexistent-token")
-	if err != ErrTokenNotFound {
+	if !errors.Is(err, ErrTokenNotFound) {
 		t.Errorf("Expected ErrTokenNotFound, got %v", err)
 	}
 }
@@ -311,8 +313,8 @@ func TestGetSubscriptions_ReturnsOnlyConfirmed(t *testing.T) {
 	svc, repo, _, _ := setupTestService()
 
 	// create two subscriptions
-	_ = svc.Subscribe("user@example.com", "golang/go")
-	_ = svc.Subscribe("user@example.com", "facebook/react")
+	_ = svc.Subscribe(context.Background(), "user@example.com", "golang/go")
+	_ = svc.Subscribe(context.Background(), "user@example.com", "facebook/react")
 
 	// confirm only one
 	sub1, _ := repo.GetSubscriptionByEmailAndRepo("user@example.com", "golang/go")
@@ -336,7 +338,7 @@ func TestGetSubscriptions_InvalidEmail(t *testing.T) {
 	svc, _, _, _ := setupTestService()
 
 	_, err := svc.GetSubscriptions("notanemail")
-	if err != ErrInvalidEmail {
+	if !errors.Is(err, ErrInvalidEmail) {
 		t.Errorf("Expected ErrInvalidEmail, got %v", err)
 	}
 }
