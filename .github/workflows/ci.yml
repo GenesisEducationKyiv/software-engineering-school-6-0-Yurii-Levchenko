@@ -21,13 +21,8 @@ jobs:
         env:
           GOTOOLCHAIN: auto
 
-      - name: Build
-        run: go build -v ./...
-        env:
-          GOTOOLCHAIN: auto
-
       - name: Run tests
-        run: go test -v ./internal/service/...
+        run: go test -v ./...
         env:
           GOTOOLCHAIN: auto
 
