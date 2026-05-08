@@ -2,6 +2,7 @@ package repository
 
 import (
 	"database/sql"
+	"errors"
 	"github-release-notifier/internal/model"
 	"time"
 
@@ -33,7 +34,7 @@ func (r *Repository) GetSubscriptionByToken(token string) (*model.Subscription, 
 	var sub model.Subscription
 	query := `SELECT * FROM subscriptions WHERE token = $1`
 	err := r.db.Get(&sub, query, token)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil // not found — return nil, no error
 	}
 	return &sub, err
@@ -44,7 +45,7 @@ func (r *Repository) GetSubscriptionByEmailAndRepo(email, repo string) (*model.S
 	var sub model.Subscription
 	query := `SELECT * FROM subscriptions WHERE email = $1 AND repo = $2`
 	err := r.db.Get(&sub, query, email, repo)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	return &sub, err
@@ -95,7 +96,7 @@ func (r *Repository) GetRepoTracking(repo string) (*model.Repository, error) {
 	var repoRecord model.Repository
 	query := `SELECT * FROM repositories WHERE repo = $1`
 	err := r.db.Get(&repoRecord, query, repo)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	return &repoRecord, err

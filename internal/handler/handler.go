@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // Handler holds HTTP handler methods
@@ -30,7 +31,9 @@ func (h *Handler) Subscribe(c *gin.Context) {
 		return
 	}
 
-	err := h.svc.Subscribe(req.Email, req.Repo)
+	// Pass the request context so downstream calls (GitHub API, etc.)
+	// are canceled if the client disconnects
+	err := h.svc.Subscribe(c.Request.Context(), req.Email, req.Repo)
 	if err == nil {
 		metrics.SubscriptionsCreated.Inc()
 		c.JSON(http.StatusOK, gin.H{"message": "subscription created, check your email to confirm"})
@@ -54,30 +57,31 @@ func (h *Handler) Subscribe(c *gin.Context) {
 
 // ConfirmSubscription handles GET /api/confirm/:token
 func (h *Handler) ConfirmSubscription(c *gin.Context) {
-	token := c.Param("token")
-
-	err := h.svc.Confirm(token)
-	if err == nil {
-		metrics.SubscriptionsConfirmed.Inc()
-		c.JSON(http.StatusOK, gin.H{"message": "subscription confirmed"})
-		return
-	}
-
-	if errors.Is(err, service.ErrTokenNotFound) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "token not found"})
-		return
-	}
-	c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+	h.handleTokenAction(c, h.svc.Confirm, "subscription confirmed", metrics.SubscriptionsConfirmed)
 }
 
 // Unsubscribe handles GET /api/unsubscribe/:token
 func (h *Handler) Unsubscribe(c *gin.Context) {
+	h.handleTokenAction(c, h.svc.Unsubscribe, "unsubscribed successfully", metrics.Unsubscribes)
+}
+
+// handleTokenAction is a shared helper for endpoints that:
+//   - take a :token URL parameter
+//   - call a service method that operates on that token
+//   - return a success message and increment a metric on success
+//   - map ErrTokenNotFound to 404, anything else to 500
+func (h *Handler) handleTokenAction(
+	c *gin.Context,
+	action func(token string) error,
+	successMessage string,
+	successMetric prometheus.Counter,
+) {
 	token := c.Param("token")
 
-	err := h.svc.Unsubscribe(token)
+	err := action(token)
 	if err == nil {
-		metrics.Unsubscribes.Inc()
-		c.JSON(http.StatusOK, gin.H{"message": "unsubscribed successfully"})
+		successMetric.Inc()
+		c.JSON(http.StatusOK, gin.H{"message": successMessage})
 		return
 	}
 

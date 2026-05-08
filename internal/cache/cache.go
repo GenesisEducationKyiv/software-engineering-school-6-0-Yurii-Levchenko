@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -39,7 +40,7 @@ func (c *Cache) Get(key string) (string, error) {
 	defer cancel()
 
 	val, err := c.client.Get(ctx, key).Result()
-	if err == redis.Nil {
+	if errors.Is(err, redis.Nil) {
 		return "", nil // cache miss, not an error
 	}
 	return val, err

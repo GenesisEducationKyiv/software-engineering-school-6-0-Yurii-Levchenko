@@ -20,7 +20,7 @@ type RepoStore interface {
 
 // ReleaseChecker defines the GitHub API operations the scanner needs
 type ReleaseChecker interface {
-	GetLatestRelease(owner, repo string) (string, error)
+	GetLatestRelease(ctx context.Context, owner, repo string) (string, error)
 }
 
 // ReleaseNotifier defines the email operations the scanner needs
@@ -49,12 +49,14 @@ func New(repo RepoStore, github ReleaseChecker, notifier ReleaseNotifier, interv
 }
 
 // Start begins the periodic release scanning in a loop
-// Accepts context for graceful shutdown — when context is cancelled, the scanner stops cleanly
+// Accepts context for graceful shutdown — when context is canceled, the scanner stops cleanly
+// The same ctx is also propagated to outgoing GitHub API calls so they can be canceled
+// when the application shuts down (no orphaned in-flight requests)
 func (s *Scanner) Start(ctx context.Context) {
 	log.Printf("Scanner started, checking every %v", s.interval)
 
 	// runs immediately on startup, then on ticker
-	s.scan()
+	s.scan(ctx)
 
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
@@ -65,13 +67,13 @@ func (s *Scanner) Start(ctx context.Context) {
 			log.Println("Scanner stopped gracefully")
 			return
 		case <-ticker.C:
-			s.scan()
+			s.scan(ctx)
 		}
 	}
 }
 
 // scan performs one check cycle for all active repos
-func (s *Scanner) scan() {
+func (s *Scanner) scan(ctx context.Context) {
 	metrics.ScannerRunsTotal.Inc()
 	repos, err := s.repo.GetActiveRepos()
 	if err != nil {
@@ -82,19 +84,19 @@ func (s *Scanner) scan() {
 	log.Printf("Scanner: checking %d repos for new releases", len(repos))
 
 	for _, repoStr := range repos {
-		s.checkRepo(repoStr)
+		s.checkRepo(ctx, repoStr)
 	}
 }
 
 // checkRepo checks a single repo for new releases
-func (s *Scanner) checkRepo(repoStr string) {
+func (s *Scanner) checkRepo(ctx context.Context, repoStr string) {
 	parts := strings.SplitN(repoStr, "/", 2)
 	if len(parts) != 2 {
 		log.Printf("Scanner: invalid repo format: %s", repoStr)
 		return
 	}
 
-	latestTag, err := s.github.GetLatestRelease(parts[0], parts[1])
+	latestTag, err := s.github.GetLatestRelease(ctx, parts[0], parts[1])
 	if err != nil {
 		log.Printf("Scanner: failed to get latest release for %s: %v", repoStr, err)
 		return

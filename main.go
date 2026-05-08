@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"os"
@@ -11,10 +12,10 @@ import (
 
 	"github-release-notifier/internal/cache"
 	"github-release-notifier/internal/config"
-	"github-release-notifier/internal/metrics"
-	"github-release-notifier/internal/middleware"
 	"github-release-notifier/internal/github"
 	"github-release-notifier/internal/handler"
+	"github-release-notifier/internal/metrics"
+	"github-release-notifier/internal/middleware"
 	"github-release-notifier/internal/notifier"
 	"github-release-notifier/internal/repository"
 	"github-release-notifier/internal/scanner"
@@ -119,8 +120,9 @@ func main() {
 	// --- Graceful Shutdown ---
 	// Create HTTP server manually (instead of router.Run) so we can shut it down gracefully
 	srv := &http.Server{
-		Addr:    ":" + cfg.AppPort,
-		Handler: router,
+		Addr:              ":" + cfg.AppPort,
+		Handler:           router,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	// Start server in a goroutine
@@ -157,7 +159,7 @@ func runMigrations(dbURL string) error {
 	if err != nil {
 		return err
 	}
-	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
+	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		return err
 	}
 	return nil

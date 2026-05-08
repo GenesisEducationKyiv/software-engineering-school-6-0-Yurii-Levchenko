@@ -1,6 +1,7 @@
 package github
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -31,10 +32,11 @@ type releaseResponse struct {
 
 // CheckRepoExists verifies that a GitHub repository exists
 // Returns true if found, false if 404, error on other failures
-func (c *Client) CheckRepoExists(owner, repo string) (bool, error) {
+// The ctx allows the caller to cancel the request (e.g., on client disconnect or shutdown)
+func (c *Client) CheckRepoExists(ctx context.Context, owner, repo string) (bool, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s", owner, repo)
 
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return false, err
 	}
@@ -57,10 +59,11 @@ func (c *Client) CheckRepoExists(owner, repo string) (bool, error) {
 
 // GetLatestRelease returns the latest release tag for a repo
 // Returns empty string if no releases exist
-func (c *Client) GetLatestRelease(owner, repo string) (string, error) {
+// The ctx allows the caller to cancel the request (e.g., on scanner shutdown)
+func (c *Client) GetLatestRelease(ctx context.Context, owner, repo string) (string, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", owner, repo)
 
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", err
 	}
@@ -97,7 +100,7 @@ func (c *Client) setHeaders(req *http.Request) {
 }
 
 // doWithRetry executes a request with retry on 429 (rate limit)
-// GitHub rate limit is 60 req/hr without token but 
+// GitHub rate limit is 60 req/hr without token but
 // I attached token so it should be 5000req/hr
 func (c *Client) doWithRetry(req *http.Request) (*http.Response, error) {
 	maxRetries := 3
@@ -115,7 +118,7 @@ func (c *Client) doWithRetry(req *http.Request) (*http.Response, error) {
 		resp.Body.Close()
 
 		// exponential backoff: 2s, 4s, 8s
-		backoff := time.Duration(1<<uint(i+1)) * time.Second
+		backoff := time.Duration(2<<i) * time.Second
 		time.Sleep(backoff)
 	}
 

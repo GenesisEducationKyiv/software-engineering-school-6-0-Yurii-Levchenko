@@ -1,6 +1,7 @@
 package github
 
 import (
+	"context"
 	"fmt"
 	"github-release-notifier/internal/metrics"
 	"log"
@@ -25,7 +26,8 @@ func NewCachedClient(client *Client, cache Cacher) *CachedClient {
 }
 
 // CheckRepoExists checks cache first, then GitHub API
-func (cc *CachedClient) CheckRepoExists(owner, repo string) (bool, error) {
+// The ctx is forwarded to the underlying GitHub client for cancellation
+func (cc *CachedClient) CheckRepoExists(ctx context.Context, owner, repo string) (bool, error) {
 	key := fmt.Sprintf("repo_exists:%s/%s", owner, repo)
 
 	// check cache
@@ -47,7 +49,7 @@ func (cc *CachedClient) CheckRepoExists(owner, repo string) (bool, error) {
 	// cache miss - call GitHub API
 	metrics.GitHubAPICalls.WithLabelValues("check_repo", "miss").Inc()
 	log.Printf("Cache MISS: %s, calling GitHub API", key)
-	exists, err := cc.client.CheckRepoExists(owner, repo)
+	exists, err := cc.client.CheckRepoExists(ctx, owner, repo)
 	if err != nil {
 		return false, err
 	}
@@ -65,7 +67,8 @@ func (cc *CachedClient) CheckRepoExists(owner, repo string) (bool, error) {
 }
 
 // GetLatestRelease checks cache first, then GitHub API
-func (cc *CachedClient) GetLatestRelease(owner, repo string) (string, error) {
+// The ctx is forwarded to the underlying GitHub client for cancellation
+func (cc *CachedClient) GetLatestRelease(ctx context.Context, owner, repo string) (string, error) {
 	key := fmt.Sprintf("latest_release:%s/%s", owner, repo)
 
 	// check cache
@@ -82,7 +85,7 @@ func (cc *CachedClient) GetLatestRelease(owner, repo string) (string, error) {
 	// cache miss — call GitHub API
 	metrics.GitHubAPICalls.WithLabelValues("latest_release", "miss").Inc()
 	log.Printf("Cache MISS: %s, calling GitHub API", key)
-	tag, err := cc.client.GetLatestRelease(owner, repo)
+	tag, err := cc.client.GetLatestRelease(ctx, owner, repo)
 	if err != nil {
 		return "", err
 	}
