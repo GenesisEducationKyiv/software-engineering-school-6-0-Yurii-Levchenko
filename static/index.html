@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GitHub Release Notifier</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0d1117;
+            color: #c9d1d9;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .container {
+            width: 100%;
+            max-width: 480px;
+            padding: 24px;
+        }
+        h1 {
+            font-size: 24px;
+            color: #f0f6fc;
+            margin-bottom: 8px;
+        }
+        .subtitle {
+            color: #8b949e;
+            margin-bottom: 32px;
+            font-size: 14px;
+        }
+        .form-group {
+            margin-bottom: 16px;
+        }
+        label {
+            display: block;
+            font-size: 14px;
+            font-weight: 500;
+            margin-bottom: 6px;
+            color: #c9d1d9;
+        }
+        input {
+            width: 100%;
+            padding: 10px 12px;
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            color: #c9d1d9;
+            font-size: 14px;
+            outline: none;
+        }
+        input:focus { border-color: #58a6ff; }
+        input::placeholder { color: #484f58; }
+        button {
+            width: 100%;
+            padding: 12px;
+            background: #238636;
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: 8px;
+        }
+        button:hover { background: #2ea043; }
+        button:disabled { background: #21262d; cursor: not-allowed; color: #484f58; }
+        .message {
+            margin-top: 16px;
+            padding: 12px;
+            border-radius: 6px;
+            font-size: 14px;
+            display: none;
+        }
+        .message.success { display: block; background: #0d2818; border: 1px solid #238636; color: #3fb950; }
+        .message.error { display: block; background: #2d1215; border: 1px solid #da3633; color: #f85149; }
+        .subscriptions {
+            margin-top: 32px;
+            border-top: 1px solid #21262d;
+            padding-top: 24px;
+        }
+        .subscriptions h2 { font-size: 16px; margin-bottom: 12px; color: #f0f6fc; }
+        .sub-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 12px;
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            margin-bottom: 8px;
+            font-size: 13px;
+        }
+        .sub-item a {
+            color: #f85149;
+            text-decoration: none;
+            font-size: 12px;
+        }
+        .sub-item a:hover { text-decoration: underline; }
+        .lookup { display: flex; gap: 8px; margin-bottom: 12px; }
+        .lookup input { flex: 1; }
+        .lookup button { width: auto; padding: 10px 16px; margin-top: 0; }
+        .empty { color: #484f58; font-size: 13px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>GitHub Release Notifier</h1>
+        <p class="subtitle">Get email notifications when a GitHub repo publishes a new release.</p>
+
+        <form id="subscribeForm">
+            <div class="form-group">
+                <label for="email">Email</label>
+                <input type="email" id="email" placeholder="you@example.com" required>
+            </div>
+            <div class="form-group">
+                <label for="repo">Repository (owner/repo)</label>
+                <input type="text" id="repo" placeholder="gin-gonic/gin" required pattern="^[^/]+/[^/]+$">
+            </div>
+            <button type="submit" id="submitBtn">Subscribe</button>
+        </form>
+
+        <div id="message" class="message"></div>
+
+        <div class="subscriptions">
+            <h2>My Subscriptions</h2>
+            <div class="lookup">
+                <input type="email" id="lookupEmail" placeholder="you@example.com">
+                <button onclick="loadSubscriptions()">Load</button>
+            </div>
+            <div id="subList"><p class="empty">Enter your email and click Load.</p></div>
+        </div>
+    </div>
+
+    <script>
+        const form = document.getElementById('subscribeForm');
+        const msg = document.getElementById('message');
+        const submitBtn = document.getElementById('submitBtn');
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            msg.className = 'message';
+            msg.style.display = 'none';
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Subscribing...';
+
+            try {
+                const res = await fetch('/api/subscribe', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        email: document.getElementById('email').value,
+                        repo: document.getElementById('repo').value
+                    })
+                });
+                const data = await res.json();
+
+                if (res.ok) {
+                    msg.className = 'message success';
+                    msg.textContent = data.message + ' Check your email inbox to confirm.';
+                } else {
+                    msg.className = 'message error';
+                    msg.textContent = data.error;
+                }
+            } catch (err) {
+                msg.className = 'message error';
+                msg.textContent = 'Failed to connect to server.';
+            }
+
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Subscribe';
+        });
+
+        async function loadSubscriptions() {
+            const email = document.getElementById('lookupEmail').value;
+            const list = document.getElementById('subList');
+            if (!email) { list.innerHTML = '<p class="empty">Enter an email address.</p>'; return; }
+
+            try {
+                const res = await fetch(`/api/subscriptions?email=${encodeURIComponent(email)}`);
+                const subs = await res.json();
+
+                if (!Array.isArray(subs) || subs.length === 0) {
+                    list.innerHTML = '<p class="empty">No active subscriptions found.</p>';
+                    return;
+                }
+
+                list.innerHTML = subs.map(s =>
+                    `<div class="sub-item">
+                        <span>${s.repo}</span>
+                        <a href="/api/unsubscribe/${s.token}" onclick="return confirm('Unsubscribe from ${s.repo}?')">unsubscribe</a>
+                    </div>`
+                ).join('');
+            } catch (err) {
+                list.innerHTML = '<p class="empty">Failed to load subscriptions.</p>';
+            }
+        }
+    </script>
+</body>
+</html>

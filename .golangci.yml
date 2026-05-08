@@ -1,0 +1,89 @@
+# golangci-lint configuration for github-release-notifier
+# Reference: https://golangci-lint.run/usage/configuration/
+
+run:
+  timeout: 5m
+  tests: true
+  modules-download-mode: readonly
+
+linters:
+  # Disable all linters first, then enable an explicit, thoughtful set
+  disable-all: true
+  enable:
+    # Default set — built-in correctness checks
+    - errcheck       # unchecked errors
+    - gosimple       # simplifications
+    - govet          # vet checks (printf, lock copies, shadowing)
+    - ineffassign    # ineffectual assignments
+    - staticcheck    # comprehensive static analysis
+    - unused         # unused code
+
+    # Style and consistency
+    - gofmt          # gofmt formatting
+    - goimports      # imports formatting
+    - misspell       # English spelling
+    - revive         # replacement for golint with sensible defaults
+    - stylecheck     # style checks (ST1xxx)
+    - whitespace     # leading/trailing whitespace
+
+    # Bug-prone patterns
+    - bodyclose      # http response body must be closed
+    - errorlint      # proper Go 1.13+ error wrapping
+    - rowserrcheck   # sql.Rows.Err() must be checked
+    - sqlclosecheck  # sql.Rows / Stmt must be closed
+    - noctx          # http requests without context
+    - contextcheck   # context inheritance correctness
+
+    # Code quality
+    - gocyclo        # cyclomatic complexity
+    - goconst        # repeated string constants
+    - unconvert      # unnecessary type conversions
+    - unparam        # unused function parameters
+    - prealloc       # slice preallocation hints
+    - nakedret       # naked returns in long functions
+    - dupl           # duplicate code blocks
+
+    # Security
+    - gosec          # security audit
+
+linters-settings:
+  gocyclo:
+    min-complexity: 15
+  goconst:
+    min-len: 3
+    min-occurrences: 3
+  dupl:
+    threshold: 100
+  misspell:
+    locale: US
+  revive:
+    rules:
+      - name: exported
+        disabled: true   # we don't require comments on every exported symbol
+      - name: package-comments
+        disabled: true
+      - name: unused-parameter
+        disabled: true   # unparam handles this better
+  gosec:
+    excludes:
+      - G404   # use of weak random number generator (we don't generate secrets with math/rand)
+
+issues:
+  # don't hide repeated issues — show all
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+  exclude-rules:
+    # tests are allowed to be more relaxed
+    - path: _test\.go
+      linters:
+        - gocyclo
+        - dupl
+        - errcheck
+        - gosec
+        - unparam
+
+    # main.go can be a bit longer / more complex (it's wiring)
+    - path: main\.go
+      linters:
+        - gocyclo
