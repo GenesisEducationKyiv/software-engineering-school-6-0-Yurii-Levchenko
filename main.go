@@ -82,14 +82,14 @@ func main() {
 	}
 
 	emailNotifier := notifier.New(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUser, cfg.SMTPPass, cfg.SMTPFrom)
-	svc := service.New(repo, ghService, emailNotifier, cfg.BaseURL)
+	svc := service.New(repo, repo, ghService, emailNotifier, cfg.BaseURL)
 	h := handler.New(svc)
 
 	// --- Start Background Scanner with context for graceful shutdown ---
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	releaseScanner := scanner.New(repo, scannerGH, emailNotifier, cfg.ScanIntervalSecs, cfg.BaseURL)
+	releaseScanner := scanner.New(repo, repo, scannerGH, emailNotifier, cfg.ScanIntervalSecs, cfg.BaseURL)
 	go releaseScanner.Start(ctx)
 
 	// --- Setup Router ---
