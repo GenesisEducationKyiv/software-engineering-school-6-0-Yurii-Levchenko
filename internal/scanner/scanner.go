@@ -96,46 +96,68 @@ func (s *Scanner) scan(ctx context.Context) {
 	}
 }
 
-// checkRepo checks a single repo for new releases
+// checkRepo orchestrates the per-repo cycle for a single repository:
+//
+//	1 detect whether a new release tag exists (vs stored last_seen_tag)
+//	2 if yes — persist the new tag and notify all subscribers
+//
+// All error logging happens inside the helpers; this function stays thin
 func (s *Scanner) checkRepo(ctx context.Context, repoStr string) {
+	newTag, ok := s.detectNewRelease(ctx, repoStr)
+	if !ok {
+		return
+	}
+	s.recordAndNotify(repoStr, newTag)
+}
+
+// detectNewRelease asks GitHub for the latest release of the given repo
+// and compares against the stored last_seen_tag. Returns (tag, true) only
+// when a genuinely new release is detected. Returns ("", false) for any
+// of: parse error, GitHub error, repo has no releases, tag unchanged.
+// All failures are logged here; callers just check the boolean
+func (s *Scanner) detectNewRelease(ctx context.Context, repoStr string) (string, bool) {
 	spec, err := model.ParseRepoSpec(repoStr)
 	if err != nil {
 		log.Printf("Scanner: invalid repo format: %s", repoStr)
-		return
+		return "", false
 	}
 
 	latestTag, err := s.github.GetLatestRelease(ctx, spec.Owner, spec.Name)
 	if err != nil {
 		log.Printf("Scanner: failed to get latest release for %s: %v", repoStr, err)
-		return
+		return "", false
 	}
-
 	if latestTag == "" {
-		return // no releases for this repo
+		return "", false // repo has no releases yet
 	}
 
-	// check if this is a new release
 	tracking, err := s.tracking.GetRepoTracking(repoStr)
 	if err != nil {
 		log.Printf("Scanner: failed to get tracking for %s: %v", repoStr, err)
-		return
+		return "", false
 	}
-
-	// if we've already seen this tag - skip
 	if tracking != nil && tracking.LastSeenTag == latestTag {
-		return
+		return "", false // already notified about this tag
 	}
 
 	log.Printf("Scanner: new release detected for %s: %s", repoStr, latestTag)
 	metrics.ReleasesDetected.Inc()
+	return latestTag, true
+}
 
-	// update the tracking record
-	if err := s.tracking.UpsertRepoTracking(repoStr, latestTag); err != nil {
+// recordAndNotify persists the new last_seen_tag and notifies all
+// confirmed subscribers about the new release. Email-send failures are
+// logged per subscriber but do not abort the loop — we want to attempt
+// every recipient even if one address bounces.
+// Note: ctx is not yet plumbed here because the notifier doesn't accept
+// it; will be added when notifications move to an async worker pool
+// (see TODO in system-design/README.md).
+func (s *Scanner) recordAndNotify(repoStr, newTag string) {
+	if err := s.tracking.UpsertRepoTracking(repoStr, newTag); err != nil {
 		log.Printf("Scanner: failed to update tracking for %s: %v", repoStr, err)
 		return
 	}
 
-	// notify all subscribers
 	subscribers, err := s.subs.GetSubscribersByRepo(repoStr)
 	if err != nil {
 		log.Printf("Scanner: failed to get subscribers for %s: %v", repoStr, err)
@@ -144,11 +166,11 @@ func (s *Scanner) checkRepo(ctx context.Context, repoStr string) {
 
 	for _, sub := range subscribers {
 		unsubURL := fmt.Sprintf("%s/api/unsubscribe/%s", s.baseURL, sub.Token)
-		if err := s.notifier.SendReleaseNotification(sub.Email, repoStr, latestTag, unsubURL); err != nil {
+		if err := s.notifier.SendReleaseNotification(sub.Email, repoStr, newTag, unsubURL); err != nil {
 			log.Printf("Scanner: failed to notify %s about %s: %v", sub.Email, repoStr, err)
-		} else {
-			metrics.NotificationsSent.Inc()
-			log.Printf("Scanner: notified %s about %s %s", sub.Email, repoStr, latestTag)
+			continue
 		}
+		metrics.NotificationsSent.Inc()
+		log.Printf("Scanner: notified %s about %s %s", sub.Email, repoStr, newTag)
 	}
 }
