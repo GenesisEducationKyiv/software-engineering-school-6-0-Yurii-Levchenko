@@ -62,21 +62,6 @@ func New(subs SubscriptionStore, tracker RepoTracker, github GitHubClient, notif
 	}
 }
 
-// Custom error types so handlers can return proper HTTP status codes
-var (
-	ErrRepoNotFound      = fmt.Errorf("repository not found on GitHub")
-	ErrAlreadySubscribed = fmt.Errorf("email is already subscribed to this repository")
-	ErrTokenNotFound     = fmt.Errorf("subscription not found")
-	ErrInvalidEmail      = fmt.Errorf("invalid email address")
-)
-
-// ErrInvalidRepoFormat is re-exported from the model package so existing
-// callers (handler, tests) can keep using service.ErrInvalidRepoFormat
-// without importing model directly. The canonical definition lives in
-// model.ErrInvalidRepoFormat (GRASP Principle - Information Expert: parsing rules belong
-// to the value object)
-var ErrInvalidRepoFormat = model.ErrInvalidRepoFormat
-
 // email validation pattern
 var emailRegex = regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
 
@@ -97,7 +82,7 @@ func (s *Service) Subscribe(ctx context.Context, email, repoStr string) error {
 	// 2. Validate repo format
 	spec, err := model.ParseRepoSpec(repoStr)
 	if err != nil {
-		return err
+		return ErrInvalidRepoFormat
 	}
 
 	// 3. Check if repo exists on GitHub

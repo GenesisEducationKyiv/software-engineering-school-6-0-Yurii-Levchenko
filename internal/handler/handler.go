@@ -40,19 +40,15 @@ func (h *Handler) Subscribe(c *gin.Context) {
 		return
 	}
 
-	// map business errors to HTTP status codes (smh like exception handler)
-	switch {
-	case errors.Is(err, service.ErrInvalidEmail):
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-	case errors.Is(err, service.ErrInvalidRepoFormat):
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-	case errors.Is(err, service.ErrRepoNotFound):
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
-	case errors.Is(err, service.ErrAlreadySubscribed):
-		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
-	default:
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+	// Map domain errors to HTTP statuses via the HTTPError interface (OCP):
+	// the error itself knows its status, so adding new domain errors doesn't
+	// require touching the handler.
+	var he service.HTTPError
+	if errors.As(err, &he) {
+		c.JSON(he.Status(), gin.H{"error": he.Error()})
+		return
 	}
+	c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 }
 
 // ConfirmSubscription handles GET /api/confirm/:token
@@ -85,8 +81,9 @@ func (h *Handler) handleTokenAction(
 		return
 	}
 
-	if errors.Is(err, service.ErrTokenNotFound) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "token not found"})
+	var he service.HTTPError
+	if errors.As(err, &he) {
+		c.JSON(he.Status(), gin.H{"error": he.Error()})
 		return
 	}
 	c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
@@ -102,8 +99,9 @@ func (h *Handler) GetSubscriptions(c *gin.Context) {
 
 	subs, err := h.svc.GetSubscriptions(email)
 	if err != nil {
-		if errors.Is(err, service.ErrInvalidEmail) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		var he service.HTTPError
+		if errors.As(err, &he) {
+			c.JSON(he.Status(), gin.H{"error": he.Error()})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
