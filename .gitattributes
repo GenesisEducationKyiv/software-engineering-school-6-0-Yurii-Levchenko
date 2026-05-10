@@ -1,0 +1,22 @@
+# Force LF line endings for all text files to keep cross-platform Go projects
+# clean. Without this, Windows checkout converts files to CRLF, which gofmt
+# (and other Go tooling) treats as "not properly formatted".
+* text=auto eol=lf
+
+# Explicit overrides for project file types
+*.go        text eol=lf
+*.md        text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.sql       text eol=lf
+*.sh        text eol=lf
+*.json      text eol=lf
+*.html      text eol=lf
+Dockerfile  text eol=lf
+
+# Binary files — never normalize
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.ico       binary
+*.pdf       binary
