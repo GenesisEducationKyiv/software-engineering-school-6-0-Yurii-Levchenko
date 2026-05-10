@@ -52,15 +52,6 @@ func New(repo RepositoryStore, github GitHubClient, notifier EmailNotifier, base
 	}
 }
 
-// Custom error types so handlers can return proper HTTP status codes
-var (
-	ErrInvalidRepoFormat = fmt.Errorf("invalid repository format, expected owner/repo")
-	ErrRepoNotFound      = fmt.Errorf("repository not found on GitHub")
-	ErrAlreadySubscribed = fmt.Errorf("email is already subscribed to this repository")
-	ErrTokenNotFound     = fmt.Errorf("subscription not found")
-	ErrInvalidEmail      = fmt.Errorf("invalid email address")
-)
-
 // email validation pattern
 var emailRegex = regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
 
