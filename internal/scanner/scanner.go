@@ -6,7 +6,6 @@ import (
 	"github-release-notifier/internal/metrics"
 	"github-release-notifier/internal/model"
 	"log"
-	"strings"
 	"time"
 )
 
@@ -90,13 +89,13 @@ func (s *Scanner) scan(ctx context.Context) {
 
 // checkRepo checks a single repo for new releases
 func (s *Scanner) checkRepo(ctx context.Context, repoStr string) {
-	parts := strings.SplitN(repoStr, "/", 2)
-	if len(parts) != 2 {
+	spec, err := model.ParseRepoSpec(repoStr)
+	if err != nil {
 		log.Printf("Scanner: invalid repo format: %s", repoStr)
 		return
 	}
 
-	latestTag, err := s.github.GetLatestRelease(ctx, parts[0], parts[1])
+	latestTag, err := s.github.GetLatestRelease(ctx, spec.Owner, spec.Name)
 	if err != nil {
 		log.Printf("Scanner: failed to get latest release for %s: %v", repoStr, err)
 		return
