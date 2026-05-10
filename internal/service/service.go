@@ -9,15 +9,24 @@ import (
 	"github.com/google/uuid"
 )
 
-// RepositoryStore defines the interface for database operations
-// we code against the interface, not the implementation. This makes unit testing easy (we can mock it)
-type RepositoryStore interface {
+// SubscriptionStore covers per-subscription operations used by the
+// subscription lifecycle (subscribe, confirm, unsubscribe, list-for-email)
+// We split this from a previous fat RepositoryStore interface (ISP):
+// each consumer now depends only on the methods it actually calls
+type SubscriptionStore interface {
 	CreateSubscription(sub *model.Subscription) error
 	GetSubscriptionByToken(token string) (*model.Subscription, error)
 	GetSubscriptionByEmailAndRepo(email, repo string) (*model.Subscription, error)
 	ConfirmSubscription(token string) error
 	DeleteSubscription(token string) error
 	GetActiveSubscriptionsByEmail(email string) ([]model.Subscription, error)
+}
+
+// RepoTracker is the minimum interface service needs from the tracking
+// store: it only registers a repo for scanning after confirmation
+// Scanner has its own broader interface (ReleaseTrackingStore) because
+// it also reads tracking state; service never reads, only writes
+type RepoTracker interface {
 	UpsertRepoTracking(repo, lastSeenTag string) error
 }
 
@@ -35,16 +44,18 @@ type EmailNotifier interface {
 // validation, orchestration, and rules live in this layer
 // Handlers call Service methods; Service calls Repository and external clients
 type Service struct {
-	repo     RepositoryStore
+	subs     SubscriptionStore
+	tracker  RepoTracker
 	github   GitHubClient
 	notifier EmailNotifier
 	baseURL  string
 }
 
 // creates a new Service
-func New(repo RepositoryStore, github GitHubClient, notifier EmailNotifier, baseURL string) *Service {
+func New(subs SubscriptionStore, tracker RepoTracker, github GitHubClient, notifier EmailNotifier, baseURL string) *Service {
 	return &Service{
-		repo:     repo,
+		subs:     subs,
+		tracker:  tracker,
 		github:   github,
 		notifier: notifier,
 		baseURL:  baseURL,
@@ -100,7 +111,7 @@ func (s *Service) Subscribe(ctx context.Context, email, repoStr string) error {
 	}
 
 	// 4. Check if already subscribed
-	existing, err := s.repo.GetSubscriptionByEmailAndRepo(email, repoStr)
+	existing, err := s.subs.GetSubscriptionByEmailAndRepo(email, repoStr)
 	// it returns nil - no duplicates so we can proceed with creating a subscription
 	if err != nil {
 		return fmt.Errorf("database error: %w", err)
@@ -118,7 +129,7 @@ func (s *Service) Subscribe(ctx context.Context, email, repoStr string) error {
 		Confirmed: false,
 	}
 
-	if err := s.repo.CreateSubscription(sub); err != nil {
+	if err := s.subs.CreateSubscription(sub); err != nil {
 		return fmt.Errorf("failed to create subscription: %w", err)
 	}
 
@@ -133,7 +144,7 @@ func (s *Service) Subscribe(ctx context.Context, email, repoStr string) error {
 
 // Confirm handles the email confirmation logic
 func (s *Service) Confirm(token string) error {
-	sub, err := s.repo.GetSubscriptionByToken(token)
+	sub, err := s.subs.GetSubscriptionByToken(token)
 	if err != nil {
 		return fmt.Errorf("database error: %w", err)
 	}
@@ -146,12 +157,12 @@ func (s *Service) Confirm(token string) error {
 		return nil
 	}
 
-	if err := s.repo.ConfirmSubscription(token); err != nil {
+	if err := s.subs.ConfirmSubscription(token); err != nil {
 		return fmt.Errorf("failed to confirm subscription: %w", err)
 	}
 
 	// Ensure repo is being tracked
-	if err := s.repo.UpsertRepoTracking(sub.Repo, ""); err != nil {
+	if err := s.tracker.UpsertRepoTracking(sub.Repo, ""); err != nil {
 		return fmt.Errorf("failed to track repository: %w", err)
 	}
 
@@ -160,7 +171,7 @@ func (s *Service) Confirm(token string) error {
 
 // unsubscription logic
 func (s *Service) Unsubscribe(token string) error {
-	sub, err := s.repo.GetSubscriptionByToken(token)
+	sub, err := s.subs.GetSubscriptionByToken(token)
 	if err != nil {
 		return fmt.Errorf("database error: %w", err)
 	}
@@ -168,7 +179,7 @@ func (s *Service) Unsubscribe(token string) error {
 		return ErrTokenNotFound
 	}
 
-	return s.repo.DeleteSubscription(token)
+	return s.subs.DeleteSubscription(token)
 }
 
 // returns all active subscriptions for email. basically runs SQL query
@@ -176,5 +187,5 @@ func (s *Service) GetSubscriptions(email string) ([]model.Subscription, error) {
 	if !ValidateEmail(email) {
 		return nil, ErrInvalidEmail
 	}
-	return s.repo.GetActiveSubscriptionsByEmail(email)
+	return s.subs.GetActiveSubscriptionsByEmail(email)
 }
