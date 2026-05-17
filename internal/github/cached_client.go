@@ -13,15 +13,24 @@ type Cacher interface {
 	Set(key, value string) error
 }
 
+// upstreamClient covers the methods CachedClient delegates to.
+// The real *Client satisfies this interface; tests can substitute a fake
+// to exercise the cache hit/miss logic in isolation (DIP — CachedClient
+// depends on an abstraction, not on the concrete HTTP client).
+type upstreamClient interface {
+	CheckRepoExists(ctx context.Context, owner, repo string) (bool, error)
+	GetLatestRelease(ctx context.Context, owner, repo string) (string, error)
+}
+
 // CachedClient wraps the GitHub Client with Redis caching
 // Checks cache before making API calls. Cache TTL is configured in the cache layer (10 min)
 type CachedClient struct {
-	client *Client
+	client upstreamClient
 	cache  Cacher
 }
 
 // NewCachedClient creates a GitHub client with Redis caching
-func NewCachedClient(client *Client, cache Cacher) *CachedClient {
+func NewCachedClient(client upstreamClient, cache Cacher) *CachedClient {
 	return &CachedClient{client: client, cache: cache}
 }
 
