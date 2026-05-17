@@ -1,0 +1,77 @@
+name: E2E tests
+
+# Drives a real Chromium browser against the full app running in
+# docker-compose (app + postgres + redis + mailpit). The user flow is
+# what's being verified, end to end, in a real browser.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Download dependencies
+        run: go mod download
+        env:
+          GOTOOLCHAIN: auto
+
+      # docker-compose has `env_file: .env`; create a minimal one with
+      # the auto-provided GITHUB_TOKEN so the app can talk to GitHub API
+      # without hitting the 60 req/hr anonymous limit shared across
+      # GitHub Actions runners. SMTP env vars are overridden inside
+      # docker-compose.yml to point at the mailpit container, so we
+      # don't need real SMTP credentials here
+      - name: Generate .env for the app container
+        run: |
+          cat > .env <<EOF
+          GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
+          EOF
+
+      - name: Start app stack
+        run: docker compose up --build -d
+
+      - name: Wait for app to be ready
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/health; then
+              echo "App is ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "App did not become ready in 30s"
+          docker compose logs
+          exit 1
+
+      - name: Install Playwright CLI
+        run: go install github.com/playwright-community/playwright-go/cmd/playwright@latest
+        env:
+          GOTOOLCHAIN: auto
+
+      - name: Install Chromium and OS deps
+        run: playwright install --with-deps chromium
+
+      - name: Run E2E tests
+        run: go test -tags=e2e -v ./e2e/...
+        env:
+          GOTOOLCHAIN: auto
+
+      # Always-run cleanup: dump container logs on failure for debugging,
+      # then tear down. `if: always()` makes this run even when previous
+      # steps failed.
+      - name: Dump container logs on failure
+        if: failure()
+        run: docker compose logs
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
