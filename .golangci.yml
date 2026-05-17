@@ -82,6 +82,7 @@ issues:
         - errcheck
         - gosec
         - unparam
+        - goconst   # repeated literals in table-driven scenarios are more readable than extracted constants
 
     # main.go can be a bit longer / more complex (it's wiring)
     - path: main\.go
