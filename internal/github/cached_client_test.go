@@ -12,7 +12,7 @@ import (
 // client) and records every call so tests can assert whether the cache
 // hit/miss behavior correctly skips or invokes the upstream.
 type fakeUpstream struct {
-	existsResults map[string]bool   // "owner/repo" -> exists
+	existsResults map[string]bool // "owner/repo" -> exists
 	existsErr     error
 	latestTags    map[string]string // "owner/repo" -> tag (empty = no releases)
 	latestErr     error
