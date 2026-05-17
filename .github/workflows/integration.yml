@@ -1,0 +1,30 @@
+name: Integration tests
+
+# Black-box HTTP tests against the full app stack with a real Postgres
+# in Docker (spun up by testcontainers-go from within the test process).
+# Requires Docker, which GitHub-hosted ubuntu-latest runners provide
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Download dependencies
+        run: go mod download
+        env:
+          GOTOOLCHAIN: auto
+
+      - name: Run integration tests
+        run: go test -tags=integration -v ./internal/integration/...
+        env:
+          GOTOOLCHAIN: auto
