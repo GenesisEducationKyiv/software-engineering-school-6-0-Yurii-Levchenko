@@ -10,18 +10,15 @@ import (
 	"syscall"
 	"time"
 
+	"github-release-notifier/internal/app"
 	"github-release-notifier/internal/cache"
 	"github-release-notifier/internal/config"
 	"github-release-notifier/internal/github"
-	"github-release-notifier/internal/handler"
-	"github-release-notifier/internal/metrics"
-	"github-release-notifier/internal/middleware"
 	"github-release-notifier/internal/notifier"
 	"github-release-notifier/internal/repository"
 	"github-release-notifier/internal/scanner"
 	"github-release-notifier/internal/service"
 
-	"github.com/gin-gonic/gin"
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
@@ -83,7 +80,6 @@ func main() {
 
 	emailNotifier := notifier.New(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUser, cfg.SMTPPass, cfg.SMTPFrom)
 	svc := service.New(repo, repo, ghService, emailNotifier, cfg.BaseURL)
-	h := handler.New(svc)
 
 	// --- Start Background Scanner with context for graceful shutdown ---
 	ctx, cancel := context.WithCancel(context.Background())
@@ -93,29 +89,9 @@ func main() {
 	go releaseScanner.Start(ctx)
 
 	// --- Setup Router ---
-	router := gin.Default()
-	router.Use(metrics.GinMiddleware())
-
-	// serve HTML subscription page at root
-	router.StaticFile("/", "./static/index.html")
-
-	// Prometheus metrics endpoint
-	router.GET("/metrics", metrics.Handler())
-
-	// health check
-	router.GET("/health", func(c *gin.Context) {
-		c.JSON(200, gin.H{"status": "ok"})
-	})
-
-	// API endpoints (protected by API key if API_KEY env var is set)
-	api := router.Group("/api")
-	api.Use(middleware.APIKeyAuth(cfg.APIKey))
-	{
-		api.POST("/subscribe", h.Subscribe)
-		api.GET("/confirm/:token", h.ConfirmSubscription)
-		api.GET("/unsubscribe/:token", h.Unsubscribe)
-		api.GET("/subscriptions", h.GetSubscriptions)
-	}
+	// Router wiring lives in internal/app so that integration tests can
+	// build the same router without spinning up main().
+	router := app.BuildRouter(svc, cfg.APIKey, "./static/index.html")
 
 	// --- Graceful Shutdown ---
 	// Create HTTP server manually (instead of router.Run) so we can shut it down gracefully
