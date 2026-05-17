@@ -140,8 +140,11 @@
 
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
+            // Reset banner: className = 'message' alone hides via CSS
+            // (.message has display:none). Do NOT set inline style here,
+            // otherwise the later .success/.error class can't show the
+            // banner (inline display:none beats class .display:block).
             msg.className = 'message';
-            msg.style.display = 'none';
             submitBtn.disabled = true;
             submitBtn.textContent = 'Subscribing...';
 
