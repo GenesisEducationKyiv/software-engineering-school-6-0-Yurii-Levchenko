@@ -62,7 +62,7 @@ func TestListSubscriptions_EmptyResult(t *testing.T) {
 		t.Fatalf("list with no data: got %d, want 200", status)
 	}
 
-	// Must serialise to "[]" not "null" (handler explicitly normalises this).
+	// Must serialize to "[]" not "null" (handler explicitly normalises this).
 	if string(body) != "[]" {
 		t.Errorf("empty list body: got %q, want %q", string(body), "[]")
 	}

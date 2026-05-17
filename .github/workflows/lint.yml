@@ -1,32 +1,12 @@
-name: CI
+name: Lint
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main]
   pull_request:
-    branches: [ main, master ]
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: 'go.mod'
-
-      - name: Download dependencies
-        run: go mod download
-        env:
-          GOTOOLCHAIN: auto
-
-      - name: Run tests
-        run: go test -v ./...
-        env:
-          GOTOOLCHAIN: auto
-
-  lint:
+  golangci-lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
