@@ -7,7 +7,7 @@ import (
 	"log"
 )
 
-// Cache values for repo_exists results. We serialise booleans as
+// Cache values for repo_exists results. We serialize booleans as
 // strings because the cache (Redis) is string-valued.
 const (
 	cachedTrue  = "true"
