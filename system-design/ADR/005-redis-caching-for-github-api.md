@@ -11,7 +11,10 @@
 Сервіс активно ходить у GitHub API:
 
 - **Subscribe-flow:** при кожному `POST /api/subscribe` викликається `CheckRepoExists(owner, repo)` — перевірка існування репо
-- **Scanner-flow:** кожні 5 хвилин для кожного активного репо — `GetLatestRelease(owner, repo)`
+- **Scanner-flow:** кожні 10 хвилин для кожного активного репо —
+  `GetLatestRelease(owner, repo)`
+...
+**Інтервал сканера вирівняно з TTL кешу** свідомо: при `scan_period = TTL` кожен цикл сканера завжди отримує свіжі дані з GitHub (cache miss), а кеш слугує перш за все subscribe-flow — коли кілька користувачів підписуються на популярний репо (`golang/go`, `gin-gonic/gin`) протягом 10-хв вікна, другий і подальші виклики читають з кешу. Якщо б `scan` був менший за TTL — половина циклів сканера читала б застарілі дані з кешу без жодної переваги в API-budget (приклад: 5/10 еквівалентний 10/10 за числом викликів, але вдвічі частіше крутить scanner-loop на хості).
 
 GitHub має жорсткі rate limits:
 
@@ -57,8 +60,11 @@ func (cc *CachedClient) CheckRepoExists(ctx context.Context, owner, repo string)
     }
     // cache MISS — call GitHub
     exists, err := cc.client.CheckRepoExists(ctx, owner, repo)
+    if err != nil {
+        return false, err // не кешуємо на помилці
+    }
     cc.cache.Set(key, fmt.Sprintf("%v", exists))
-    return exists, err
+    return exists, nil
 }
 ```
 
@@ -83,16 +89,16 @@ if err != nil {
 | `repo_exists:owner/repo` | `"true"` або `"false"` | 600s |
 | `latest_release:owner/repo` | tag string (наприклад `"v1.12.0"`) | 600s |
 
-Префікси (`repo_exists:`, `latest_release:`) дозволяють легко групувати/шукати ключі через `KEYS repo_exists:*` під час дебагінгу.
+Префікси (`repo_exists:`, `latest_release:`) дозволяють легко групувати/шукати ключі. Для prod-Redis з великим keyspace — `SCAN 0 MATCH repo_exists:*` (non-blocking, cursor-based). `KEYS` блокує single-threaded Redis і застосовується лише для локального дебагу з малим keyspace.
 
 ## Наслідки
 
 ### Позитивні
-- **Знижене навантаження на GitHub API:** при 100 репо і 5-хвилинному циклі — з кешем сканер робитиме лише ~6 виключень за 10-хвилинне вікно (бо TTL 10 хв) замість 200
-- **Persistence через рестарти:** після перезапуску сервісу кеш не треба прогрівати
+- **Дедуплікація викликів у subscribe-flow:** коли кілька користувачів підписуються на однаковий репо протягом 10хв вікна, лише перший виклик іде на GitHub — решта читають з кешу. Для scanner кеш не дає переваг (при `scan_period = TTL` кожен цикл — cache miss), бо scanner не повторюється на одному репо в межах одного циклу — кеш-економія можлива тільки на повторних реквестах про той самий репо.
+- **Persistence через рестарти:** Redis зберігає закешовані ключі між рестартами app — після перезапуску попередньо отримані відповіді ще валідні поки не вичерпається їх TTL, не треба заново заповнювати кеш через перші виклики до GitHub.
 - **Метрики hit/miss:** Prometheus-counter `github_api_calls_total{cache="hit|miss"}` дозволяє відстежувати ефективність кешу в продакшні
 - **Резильєнтність:** якщо Redis впаде — сервіс продовжує роботу (graceful degradation)
-- **Простий debug:** `docker exec redis redis-cli KEYS '*'` показує всі ключі
+- **Простий debug:** `docker exec redis redis-cli KEYS '*'` показує всі ключі (`KEYS '*'` теж працює локально, але у проді обовʼязково `SCAN`)
 
 ### Негативні
 - **Додатковий контейнер:** docker-compose тепер має +1 сервіс (app, db, *redis*)

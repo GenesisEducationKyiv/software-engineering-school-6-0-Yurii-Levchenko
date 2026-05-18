@@ -88,6 +88,8 @@ github.GetLatestRelease(ctx, owner, repo)
 - Скасовує всі поточні HTTP-запити до GitHub
 - Дозволяє HTTP-серверу gracefully завершити in-flight запити (через окремий `srv.Shutdown(ctx)`)
 
+**Поточний scope:** реалізовано в ланцюгу handler → service → GitHub client. Repository-методи (sqlx-запити) і SMTP-надсилання поки не приймають context — це наступна ітерація рефакторингу (див. негативні наслідки).
+
 ## Наслідки
 
 ### Позитивні
@@ -99,5 +101,5 @@ github.GetLatestRelease(ctx, owner, repo)
 
 ### Негативні
 - **Багато сигнатур змінилось:** `Service.Subscribe`, `GitHubClient.CheckRepoExists`, `GitHubClient.GetLatestRelease`, `Scanner.scan`, `Scanner.checkRepo` — усі тепер приймають `ctx` першим параметром
-- **Тести стали трохи довшими:** кожен виклик в test-файлах потребує `context.Background()` як перший аргумент. Mock'и теж приймають ctx (і ігнорують його через `_`)
+- **Тестовий код містить трохи більше boilerplate-у:** кожен виклик в test-файлах потребує `context.Background()` як перший аргумент. Mock'и теж приймають ctx (і ігнорують його через `_`)
 - **DB і SMTP поки не отримують ctx:** repository-методи і notifier ще не приймають ctx (TODO для майбутньої ітерації — використати `db.QueryContext`, `db.ExecContext` через sqlx). Зараз `database/sql` пул сам обробляє таймаути на рівні connection

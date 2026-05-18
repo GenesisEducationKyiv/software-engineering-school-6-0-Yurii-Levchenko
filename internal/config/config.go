@@ -34,7 +34,7 @@ func Load() *Config {
 		SMTPPass:         getEnv("SMTP_PASS", ""),
 		SMTPFrom:         getEnv("SMTP_FROM", "noreply@github-notifier.local"),
 		GitHubToken:      getEnv("GITHUB_TOKEN", ""),
-		ScanIntervalSecs: getEnvInt("SCAN_INTERVAL_SECONDS", 300),
+		ScanIntervalSecs: getEnvInt("SCAN_INTERVAL_SECONDS", 600),
 		RedisURL:         getEnv("REDIS_URL", "redis://localhost:6379/0"),
 		CacheTTLSeconds:  getEnvInt("CACHE_TTL_SECONDS", 600),
 		APIKey:           getEnv("API_KEY", ""),

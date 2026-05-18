@@ -24,7 +24,7 @@
 Проєкт навчальний, працює як single-instance в docker-compose. Жорстких SLA немає. Нижче — характеристики, які реалізовано на сьогодні, і цілі, до яких архітектура готова рухатись.
 
 **Реалізовано:**
-- **Запуск:** `docker-compose up --build` піднімає всю систему за <30s
+- **Запуск:** Запуск системи через `docker-compose up --build` повинен виконуватись не більше 30сек.
 - **Persistent state:** Postgres зберігає підписки і `last_seen_tag` сканера; рестарт app не втрачає даних
 - **Безпека:** опційна API-key автентифікація на `/api/*`; UUID v4 токени (122 біти ентропії — неможливо вгадати); SQL-параметризація через sqlx (anti-injection); `ReadHeaderTimeout: 10s` (anti-Slowloris)
 - **Спостережуваність:** Prometheus `/metrics` з кастомними counters і histograms; логи у stdout (наразі plaintext через stdlib `log`)
@@ -470,7 +470,7 @@ sequenceDiagram
 
 ---
 
-## 10. Що я покрищу далі
+## 10. Що я покращу далі
 
 - **Outbox-pattern для email** — гарантована доставка через persisted queue в БД
 - **Distributed lock на сканер** через Redis SETNX або Postgres advisory lock — для multi-instance розгортання
