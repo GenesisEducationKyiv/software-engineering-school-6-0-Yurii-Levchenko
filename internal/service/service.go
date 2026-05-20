@@ -82,7 +82,9 @@ func (s *Service) Subscribe(ctx context.Context, email, repoStr string) error {
 	// 2. Validate repo format
 	spec, err := model.ParseRepoSpec(repoStr)
 	if err != nil {
-		return ErrInvalidRepoFormat
+		// Translate the model-layer parsing error into the service domain
+		// sentinel, preserving the original cause via %w for logs/debug
+		return fmt.Errorf("%w: %w", ErrInvalidRepoFormat, err)
 	}
 
 	// 3. Check if repo exists on GitHub
