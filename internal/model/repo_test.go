@@ -19,6 +19,14 @@ func TestParseRepoSpec(t *testing.T) {
 		{"/repo", "", "", true},
 		{"owner/", "", "", true},
 		{"", "", "", true},
+
+		// repo path is exactly 2 segments, anything else is invalid for our API contract
+		{"owner/repo/branch", "", "", true},
+		{"owner/repo/branch/", "", "", true},
+		{"a/b/c", "", "", true},
+		{"//", "", "", true},
+		{"/owner/repo", "", "", true},
+		{"owner/repo/", "", "", true},
 	}
 
 	for _, tt := range tests {
