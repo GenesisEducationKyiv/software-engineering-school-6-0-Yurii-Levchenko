@@ -138,38 +138,6 @@ func TestValidateEmail(t *testing.T) {
 	}
 }
 
-func TestParseRepo(t *testing.T) {
-	tests := []struct {
-		input     string
-		owner     string
-		repo      string
-		expectErr bool
-	}{
-		{"golang/go", "golang", "go", false},
-		{"facebook/react", "facebook", "react", false},
-		{"owner/repo-name", "owner", "repo-name", false},
-		{"invalid", "", "", true},
-		{"/repo", "", "", true},
-		{"owner/", "", "", true},
-		{"", "", "", true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			owner, repo, err := ParseRepo(tt.input)
-			if tt.expectErr && err == nil {
-				t.Errorf("ParseRepo(%q) expected error, got nil", tt.input)
-			}
-			if !tt.expectErr && err != nil {
-				t.Errorf("ParseRepo(%q) unexpected error: %v", tt.input, err)
-			}
-			if owner != tt.owner || repo != tt.repo {
-				t.Errorf("ParseRepo(%q) = (%q, %q), want (%q, %q)", tt.input, owner, repo, tt.owner, tt.repo)
-			}
-		})
-	}
-}
-
 func TestSubscribe_Success(t *testing.T) {
 	svc, repo, _, notif := setupTestService()
 

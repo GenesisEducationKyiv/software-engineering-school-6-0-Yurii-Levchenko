@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"github-release-notifier/internal/model"
 	"regexp"
-	"strings"
 
 	"github.com/google/uuid"
 )
@@ -54,12 +53,18 @@ func New(repo RepositoryStore, github GitHubClient, notifier EmailNotifier, base
 
 // Custom error types so handlers can return proper HTTP status codes
 var (
-	ErrInvalidRepoFormat = fmt.Errorf("invalid repository format, expected owner/repo")
 	ErrRepoNotFound      = fmt.Errorf("repository not found on GitHub")
 	ErrAlreadySubscribed = fmt.Errorf("email is already subscribed to this repository")
 	ErrTokenNotFound     = fmt.Errorf("subscription not found")
 	ErrInvalidEmail      = fmt.Errorf("invalid email address")
 )
+
+// ErrInvalidRepoFormat is re-exported from the model package so existing
+// callers (handler, tests) can keep using service.ErrInvalidRepoFormat
+// without importing model directly. The canonical definition lives in
+// model.ErrInvalidRepoFormat (GRASP Principle - Information Expert: parsing rules belong
+// to the value object)
+var ErrInvalidRepoFormat = model.ErrInvalidRepoFormat
 
 // email validation pattern
 var emailRegex = regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
@@ -67,20 +72,6 @@ var emailRegex = regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-
 // checks if email address is valid
 func ValidateEmail(email string) bool {
 	return emailRegex.MatchString(email)
-}
-
-// ParseRepo validates and splits "owner/repo" format
-// Returns owner, repo, error
-func ParseRepo(repoStr string) (string, string, error) {
-	parts := strings.SplitN(repoStr, "/", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", ErrInvalidRepoFormat
-	}
-	// Check for invalid characters
-	if strings.Contains(parts[0], "/") || strings.Contains(parts[1], "/") {
-		return "", "", ErrInvalidRepoFormat
-	}
-	return parts[0], parts[1], nil
 }
 
 // Subscribe handles the subscription creation logic
@@ -93,13 +84,13 @@ func (s *Service) Subscribe(ctx context.Context, email, repoStr string) error {
 	}
 
 	// 2. Validate repo format
-	owner, repo, err := ParseRepo(repoStr)
+	spec, err := model.ParseRepoSpec(repoStr)
 	if err != nil {
 		return err
 	}
 
 	// 3. Check if repo exists on GitHub
-	exists, err := s.github.CheckRepoExists(ctx, owner, repo)
+	exists, err := s.github.CheckRepoExists(ctx, spec.Owner, spec.Name)
 	// if GitHub responds 200 then repo exists so returns true
 	if err != nil {
 		return fmt.Errorf("failed to check repository: %w", err)
