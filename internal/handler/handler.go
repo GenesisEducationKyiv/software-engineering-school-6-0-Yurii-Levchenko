@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"errors"
 	"github-release-notifier/internal/metrics"
 	"github-release-notifier/internal/model"
 	"github-release-notifier/internal/service"
@@ -40,19 +39,11 @@ func (h *Handler) Subscribe(c *gin.Context) {
 		return
 	}
 
-	// map business errors to HTTP status codes (smh like exception handler)
-	switch {
-	case errors.Is(err, service.ErrInvalidEmail):
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-	case errors.Is(err, service.ErrInvalidRepoFormat):
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-	case errors.Is(err, service.ErrRepoNotFound):
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
-	case errors.Is(err, service.ErrAlreadySubscribed):
-		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
-	default:
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
-	}
+	// Map domain errors to HTTP statuses via the HTTPError interface (OCP):
+	// the error itself knows its status, so adding new domain errors doesn't
+	// require touching the handler.
+	status, msg := translateError(err)
+	c.JSON(status, gin.H{"error": msg})
 }
 
 // ConfirmSubscription handles GET /api/confirm/:token
@@ -85,11 +76,8 @@ func (h *Handler) handleTokenAction(
 		return
 	}
 
-	if errors.Is(err, service.ErrTokenNotFound) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "token not found"})
-		return
-	}
-	c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+	status, msg := translateError(err)
+	c.JSON(status, gin.H{"error": msg})
 }
 
 // GetSubscriptions handles GET /api/subscriptions?email={email}
@@ -102,11 +90,8 @@ func (h *Handler) GetSubscriptions(c *gin.Context) {
 
 	subs, err := h.svc.GetSubscriptions(email)
 	if err != nil {
-		if errors.Is(err, service.ErrInvalidEmail) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		status, msg := translateError(err)
+		c.JSON(status, gin.H{"error": msg})
 		return
 	}
 
@@ -116,4 +101,18 @@ func (h *Handler) GetSubscriptions(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, subs)
+}
+
+// translateError converts a service-layer error into an HTTP response
+func translateError(err error) (status int, msg string) {
+	switch service.KindOf(err) {
+	case service.KindInvalid:
+		return http.StatusBadRequest, err.Error()
+	case service.KindNotFound:
+		return http.StatusNotFound, err.Error()
+	case service.KindConflict:
+		return http.StatusConflict, err.Error()
+	default:
+		return http.StatusInternalServerError, "internal server error"
+	}
 }
