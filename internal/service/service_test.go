@@ -107,7 +107,7 @@ func setupTestService() (*Service, *mockRepo, *mockGitHub, *mockNotifier) {
 		"facebook/react": true,
 	}}
 	notif := &mockNotifier{}
-	svc := New(repo, gh, notif, "http://localhost:8080")
+	svc := New(repo, repo, gh, notif, "http://localhost:8080")
 	return svc, repo, gh, notif
 }
 

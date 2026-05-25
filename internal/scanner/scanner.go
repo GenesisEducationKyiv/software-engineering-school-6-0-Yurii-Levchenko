@@ -9,12 +9,19 @@ import (
 	"time"
 )
 
-// RepoStore defines what the scanner needs from the database
-type RepoStore interface {
+// SubscriberRepository covers aggregate queries scanner needs to find
+// unique repos with active subscriptions and per-repo subscriber lists.
+// Split from a previous RepoStore fat interface (ISP)
+type SubscriberRepository interface {
 	GetActiveRepos() ([]string, error)
+	GetSubscribersByRepo(repo string) ([]model.Subscription, error)
+}
+
+// ReleaseTrackingStore reads and writes the per-repo last-seen-tag
+// state that scanner uses to detect new releases
+type ReleaseTrackingStore interface {
 	GetRepoTracking(repo string) (*model.Repository, error)
 	UpsertRepoTracking(repo, lastSeenTag string) error
-	GetSubscribersByRepo(repo string) ([]model.Subscription, error)
 }
 
 // ReleaseChecker defines the GitHub API operations the scanner needs
@@ -29,7 +36,8 @@ type ReleaseNotifier interface {
 
 // Scanner periodically checks GitHub for new releases with goroutine and ticker and notifies subscribers
 type Scanner struct {
-	repo     RepoStore
+	subs     SubscriberRepository
+	tracking ReleaseTrackingStore
 	github   ReleaseChecker
 	notifier ReleaseNotifier
 	interval time.Duration
@@ -37,9 +45,10 @@ type Scanner struct {
 }
 
 // create a new Scanner
-func New(repo RepoStore, github ReleaseChecker, notifier ReleaseNotifier, intervalSecs int, baseURL string) *Scanner {
+func New(subs SubscriberRepository, tracking ReleaseTrackingStore, github ReleaseChecker, notifier ReleaseNotifier, intervalSecs int, baseURL string) *Scanner {
 	return &Scanner{
-		repo:     repo,
+		subs:     subs,
+		tracking: tracking,
 		github:   github,
 		notifier: notifier,
 		interval: time.Duration(intervalSecs) * time.Second,
@@ -74,7 +83,7 @@ func (s *Scanner) Start(ctx context.Context) {
 // scan performs one check cycle for all active repos
 func (s *Scanner) scan(ctx context.Context) {
 	metrics.ScannerRunsTotal.Inc()
-	repos, err := s.repo.GetActiveRepos()
+	repos, err := s.subs.GetActiveRepos()
 	if err != nil {
 		log.Printf("Scanner: failed to get active repos: %v", err)
 		return
@@ -106,7 +115,7 @@ func (s *Scanner) checkRepo(ctx context.Context, repoStr string) {
 	}
 
 	// check if this is a new release
-	tracking, err := s.repo.GetRepoTracking(repoStr)
+	tracking, err := s.tracking.GetRepoTracking(repoStr)
 	if err != nil {
 		log.Printf("Scanner: failed to get tracking for %s: %v", repoStr, err)
 		return
@@ -121,13 +130,13 @@ func (s *Scanner) checkRepo(ctx context.Context, repoStr string) {
 	metrics.ReleasesDetected.Inc()
 
 	// update the tracking record
-	if err := s.repo.UpsertRepoTracking(repoStr, latestTag); err != nil {
+	if err := s.tracking.UpsertRepoTracking(repoStr, latestTag); err != nil {
 		log.Printf("Scanner: failed to update tracking for %s: %v", repoStr, err)
 		return
 	}
 
 	// notify all subscribers
-	subscribers, err := s.repo.GetSubscribersByRepo(repoStr)
+	subscribers, err := s.subs.GetSubscribersByRepo(repoStr)
 	if err != nil {
 		log.Printf("Scanner: failed to get subscribers for %s: %v", repoStr, err)
 		return
