@@ -2,7 +2,7 @@ package service
 
 import "errors"
 
-// ErrKind categorises domain failures in transport-neutral terms.
+// ErrKind categorizes domain failures in transport-neutral terms.
 // Handlers translate ErrKind into a concrete transport code
 // (HTTP status, gRPC code, CLI exit). Service layer never knows
 // about HTTP itself.
