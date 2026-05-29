@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -14,6 +14,7 @@ import (
 	"github-release-notifier/internal/cache"
 	"github-release-notifier/internal/config"
 	"github-release-notifier/internal/github"
+	"github-release-notifier/internal/logging"
 	"github-release-notifier/internal/notifier"
 	"github-release-notifier/internal/repository"
 	"github-release-notifier/internal/scanner"
@@ -34,32 +35,37 @@ func main() {
 	// Load configuration from env variables
 	cfg := config.Load()
 
+	// Configure structured JSON logging before anything else logs
+	logging.Setup(cfg.LogLevel)
+
 	// --- DB Connection ---
-	log.Println("Connecting to database...")
+	slog.Info("Connecting to database")
 	db, err := sqlx.Connect("postgres", cfg.DatabaseURL)
 	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
+		slog.Error("Failed to connect to database", "err", err)
+		os.Exit(1)
 	}
 	defer db.Close()
-	log.Println("Database connected successfully")
+	slog.Info("Database connected")
 
 	// --- Run Migrations ---
-	log.Println("Running database migrations...")
+	slog.Info("Running database migrations")
 	if err := runMigrations(cfg.DatabaseURL); err != nil {
-		log.Fatalf("Failed to run migrations: %v", err)
+		slog.Error("Failed to run migrations", "err", err)
+		os.Exit(1)
 	}
-	log.Println("Migrations completed")
+	slog.Info("Migrations completed")
 
 	// --- Redis Cache ---
-	log.Println("Connecting to Redis...")
+	slog.Info("Connecting to Redis")
 	ttl := time.Duration(cfg.CacheTTLSeconds) * time.Second
 	redisCache, err := cache.New(cfg.RedisURL, ttl)
 	if err != nil {
-		log.Printf("WARNING: Redis not available, running without cache: %v", err)
+		slog.Warn("Redis not available, running without cache", "err", err)
 		redisCache = nil
 	} else {
 		defer redisCache.Close()
-		log.Printf("Redis connected (TTL: %v)", ttl)
+		slog.Info("Redis connected", "ttl", ttl)
 	}
 
 	// --- Initialize Dependencies ---
@@ -103,9 +109,10 @@ func main() {
 
 	// Start server in a goroutine
 	go func() {
-		log.Printf("Server starting on port %s", cfg.AppPort)
+		slog.Info("Server starting", "port", cfg.AppPort)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server failed: %v", err)
+			slog.Error("Server failed", "err", err)
+			os.Exit(1)
 		}
 	}()
 
@@ -114,7 +121,7 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	log.Println("Shutting down gracefully...")
+	slog.Info("Shutting down gracefully")
 
 	// Stop scanner
 	cancel()
@@ -124,9 +131,10 @@ func main() {
 	defer shutdownCancel()
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Fatalf("Server forced to shutdown: %v", err)
+		slog.Error("Server forced to shutdown", "err", err)
+		os.Exit(1)
 	}
-	log.Println("Server stopped")
+	slog.Info("Server stopped")
 }
 
 // applies all pending SQL migrations

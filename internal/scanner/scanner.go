@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"github-release-notifier/internal/metrics"
 	"github-release-notifier/internal/model"
-	"log"
+	"log/slog"
 	"time"
 )
 
@@ -61,7 +61,7 @@ func New(subs SubscriberRepository, tracking ReleaseTrackingStore, github Releas
 // The same ctx is also propagated to outgoing GitHub API calls so they can be canceled
 // when the application shuts down (no orphaned in-flight requests)
 func (s *Scanner) Start(ctx context.Context) {
-	log.Printf("Scanner started, checking every %v", s.interval)
+	slog.Info("scanner started", "interval", s.interval)
 
 	// runs immediately on startup, then on ticker
 	s.scan(ctx)
@@ -72,7 +72,7 @@ func (s *Scanner) Start(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			log.Println("Scanner stopped gracefully")
+			slog.Info("scanner stopped gracefully")
 			return
 		case <-ticker.C:
 			s.scan(ctx)
@@ -85,11 +85,11 @@ func (s *Scanner) scan(ctx context.Context) {
 	metrics.ScannerRunsTotal.Inc()
 	repos, err := s.subs.GetActiveRepos()
 	if err != nil {
-		log.Printf("Scanner: failed to get active repos: %v", err)
+		slog.Error("scanner failed to get active repos", "err", err)
 		return
 	}
 
-	log.Printf("Scanner: checking %d repos for new releases", len(repos))
+	slog.Info("scanner cycle started", "repo_count", len(repos))
 
 	for _, repoStr := range repos {
 		s.checkRepo(ctx, repoStr)
@@ -118,13 +118,13 @@ func (s *Scanner) checkRepo(ctx context.Context, repoStr string) {
 func (s *Scanner) detectNewRelease(ctx context.Context, repoStr string) (string, bool) {
 	spec, err := model.ParseRepoSpec(repoStr)
 	if err != nil {
-		log.Printf("Scanner: invalid repo format: %s", repoStr)
+		slog.Warn("Scanner skipping invalid repo format", "repo", repoStr)
 		return "", false
 	}
 
 	latestTag, err := s.github.GetLatestRelease(ctx, spec.Owner, spec.Name)
 	if err != nil {
-		log.Printf("Scanner: failed to get latest release for %s: %v", repoStr, err)
+		slog.Error("Scanner failed to get latest release", "repo", repoStr, "err", err)
 		return "", false
 	}
 	if latestTag == "" {
@@ -133,14 +133,14 @@ func (s *Scanner) detectNewRelease(ctx context.Context, repoStr string) (string,
 
 	tracking, err := s.tracking.GetRepoTracking(repoStr)
 	if err != nil {
-		log.Printf("Scanner: failed to get tracking for %s: %v", repoStr, err)
+		slog.Error("Scanner failed to get tracking", "repo", repoStr, "err", err)
 		return "", false
 	}
 	if tracking != nil && tracking.LastSeenTag == latestTag {
 		return "", false // already notified about this tag
 	}
 
-	log.Printf("Scanner: new release detected for %s: %s", repoStr, latestTag)
+	slog.Info("New release detected", "repo", repoStr, "tag", latestTag)
 	metrics.ReleasesDetected.Inc()
 	return latestTag, true
 }
@@ -154,23 +154,23 @@ func (s *Scanner) detectNewRelease(ctx context.Context, repoStr string) (string,
 // (see TODO in system-design/README.md).
 func (s *Scanner) recordAndNotify(repoStr, newTag string) {
 	if err := s.tracking.UpsertRepoTracking(repoStr, newTag); err != nil {
-		log.Printf("Scanner: failed to update tracking for %s: %v", repoStr, err)
+		slog.Error("Scanner failed to update tracking", "repo", repoStr, "err", err)
 		return
 	}
 
 	subscribers, err := s.subs.GetSubscribersByRepo(repoStr)
 	if err != nil {
-		log.Printf("Scanner: failed to get subscribers for %s: %v", repoStr, err)
+		slog.Error("Scanner failed to get subscribers", "repo", repoStr, "err", err)
 		return
 	}
 
 	for _, sub := range subscribers {
 		unsubURL := fmt.Sprintf("%s/api/unsubscribe/%s", s.baseURL, sub.Token)
 		if err := s.notifier.SendReleaseNotification(sub.Email, repoStr, newTag, unsubURL); err != nil {
-			log.Printf("Scanner: failed to notify %s about %s: %v", sub.Email, repoStr, err)
+			slog.Error("Scanner failed to notify subscriber", "email", sub.Email, "repo", repoStr, "err", err)
 			continue
 		}
 		metrics.NotificationsSent.Inc()
-		log.Printf("Scanner: notified %s about %s %s", sub.Email, repoStr, newTag)
+		slog.Info("Scanner notified subscriber", "email", sub.Email, "repo", repoStr, "tag", newTag)
 	}
 }

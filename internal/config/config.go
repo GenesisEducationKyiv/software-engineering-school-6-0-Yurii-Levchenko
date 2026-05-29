@@ -20,6 +20,7 @@ type Config struct {
 	RedisURL         string
 	CacheTTLSeconds  int
 	APIKey           string
+	LogLevel         string
 }
 
 // Load reads all config from environment variables with sensible defaults
@@ -38,6 +39,7 @@ func Load() *Config {
 		RedisURL:         getEnv("REDIS_URL", "redis://localhost:6379/0"),
 		CacheTTLSeconds:  getEnvInt("CACHE_TTL_SECONDS", 600),
 		APIKey:           getEnv("API_KEY", ""),
+		LogLevel:         getEnv("LOG_LEVEL", "info"),
 	}
 }
 

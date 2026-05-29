@@ -22,7 +22,9 @@ import (
 // pass "" to skip the route (useful in integration tests where the file is not
 // at a predictable relative path).
 func BuildRouter(svc *service.Service, apiKey, staticIndexPath string) *gin.Engine {
-	router := gin.Default()
+	router := gin.New()
+	router.Use(gin.Recovery())
+	router.Use(middleware.RequestLogger())
 	router.Use(metrics.GinMiddleware())
 
 	if staticIndexPath != "" {
