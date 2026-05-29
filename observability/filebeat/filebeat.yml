@@ -1,0 +1,53 @@
+# Filebeat config — ships the app's container logs to Elasticsearch.
+#
+# Approach: an explicit `container` input that tails every container's
+# stdout log file directly, then drops everything that isn't our app.
+# (We deliberately avoid hints-based docker autodiscover — it proved
+# finicky on Docker Desktop and silently created zero inputs.)
+#
+# Pipeline per line:
+#   1. `container` input unwraps Docker's json-file envelope
+#      ({"log":"<app line>","stream":"stdout","time":...}) → message = app line.
+#   2. the `ndjson` parser parses that app line (our slog JSON) and lifts its
+#      fields (level, msg, repo, request_id, ...) to the document root.
+#   3. add_docker_metadata enriches with container.* (name, image, id).
+#   4. drop_event removes any container whose image isn't our app, so
+#      Elasticsearch only holds notifier logs (no postgres/redis/kibana noise).
+
+filebeat.inputs:
+  - type: container
+    paths:
+      - /var/lib/docker/containers/*/*.log
+
+processors:
+  - add_docker_metadata: ~
+  # Drop everything that isn't our app BEFORE decoding, to save work.
+  - drop_event:
+      when:
+        not:
+          contains:
+            container.image.name: "yurii-levchenko-app"
+  # The container input leaves the app's slog line as a raw JSON string in
+  # `message`. Decode it and lift level/msg/repo/request_id/... to the root
+  # so they become first-class searchable fields in Kibana.
+  - decode_json_fields:
+      fields: ["message"]
+      target: ""
+      overwrite_keys: true
+      add_error_key: true
+
+output.elasticsearch:
+  hosts: ["http://elasticsearch:9200"]
+  index: "notifier-logs-%{+yyyy.MM.dd}"
+
+# A custom index name requires turning OFF the default ILM policy, otherwise
+# Filebeat 8.x ignores `index:` above and writes to filebeat-<version>-*.
+setup.ilm.enabled: false
+setup.template.name: "notifier-logs"
+setup.template.pattern: "notifier-logs-*"
+
+setup.kibana:
+  host: "http://kibana:5601"
+
+logging.level: info
+logging.metrics.enabled: false
