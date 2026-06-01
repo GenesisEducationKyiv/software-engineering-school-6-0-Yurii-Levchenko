@@ -83,8 +83,14 @@ func (s *Scanner) Start(ctx context.Context) {
 // scan performs one check cycle for all active repos
 func (s *Scanner) scan(ctx context.Context) {
 	metrics.ScannerRunsTotal.Inc()
+	// Measure how long a full cycle takes (RED: duration). Growing duration
+	// vs the configured interval is the early signal the scanner is falling behind.
+	start := time.Now()
+	defer func() { metrics.ScannerCycleDuration.Observe(time.Since(start).Seconds()) }()
+
 	repos, err := s.subs.GetActiveRepos()
 	if err != nil {
+		metrics.ScannerErrorsTotal.WithLabelValues("list_repos").Inc()
 		slog.Error("Scanner failed to get active repos", "err", err)
 		return
 	}
@@ -124,6 +130,7 @@ func (s *Scanner) detectNewRelease(ctx context.Context, repoStr string) (string,
 
 	latestTag, err := s.github.GetLatestRelease(ctx, spec.Owner, spec.Name)
 	if err != nil {
+		metrics.ScannerErrorsTotal.WithLabelValues("github").Inc()
 		slog.Error("Scanner failed to get latest release", "repo", repoStr, "err", err)
 		return "", false
 	}
@@ -133,6 +140,7 @@ func (s *Scanner) detectNewRelease(ctx context.Context, repoStr string) (string,
 
 	tracking, err := s.tracking.GetRepoTracking(repoStr)
 	if err != nil {
+		metrics.ScannerErrorsTotal.WithLabelValues("tracking").Inc()
 		slog.Error("Scanner failed to get tracking", "repo", repoStr, "err", err)
 		return "", false
 	}
@@ -154,12 +162,14 @@ func (s *Scanner) detectNewRelease(ctx context.Context, repoStr string) (string,
 // (see TODO in system-design/README.md).
 func (s *Scanner) recordAndNotify(repoStr, newTag string) {
 	if err := s.tracking.UpsertRepoTracking(repoStr, newTag); err != nil {
+		metrics.ScannerErrorsTotal.WithLabelValues("tracking").Inc()
 		slog.Error("Scanner failed to update tracking", "repo", repoStr, "err", err)
 		return
 	}
 
 	subscribers, err := s.subs.GetSubscribersByRepo(repoStr)
 	if err != nil {
+		metrics.ScannerErrorsTotal.WithLabelValues("subscribers").Inc()
 		slog.Error("Scanner failed to get subscribers", "repo", repoStr, "err", err)
 		return
 	}
@@ -167,7 +177,8 @@ func (s *Scanner) recordAndNotify(repoStr, newTag string) {
 	for _, sub := range subscribers {
 		unsubURL := fmt.Sprintf("%s/api/unsubscribe/%s", s.baseURL, sub.Token)
 		if err := s.notifier.SendReleaseNotification(sub.Email, repoStr, newTag, unsubURL); err != nil {
-			// Log the subscription's pk
+			metrics.ScannerErrorsTotal.WithLabelValues("notify").Inc()
+			// Log subscription_id, not email (PII): SELECT email FROM subscriptions WHERE id=?
 			slog.Error("Scanner failed to notify subscriber", "subscription_id", sub.ID, "repo", repoStr, "err", err)
 			continue
 		}
