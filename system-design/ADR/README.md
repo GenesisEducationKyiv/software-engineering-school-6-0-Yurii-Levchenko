@@ -24,6 +24,7 @@ ADR-и не редагуються після прийняття. Якщо рі�
 | 005 | [Кешування GitHub API через Redis із TTL 10 хвилин](005-redis-caching-for-github-api.md)        | Прийнято |
 | 006 | [Прокидання context.Context через всю call chain](006-context-propagation-through-call-chain.md)| Прийнято |
 | 007 | [Структуроване логування (slog) і конвеєр логів до Elasticsearch](007-structured-logging-and-log-pipeline.md) | Прийнято |
+| 008 | [RED-метрики, Prometheus і Grafana](008-red-metrics-prometheus-grafana.md)                      | Прийнято |
 | 009 | [Вибір брокера повідомлень — RabbitMQ](009-message-broker-rabbitmq.md)                          | Прийнято |
 | 010 | [Розподілена транзакція підписки через оркестровану Saga](010-orchestrated-saga-for-subscribe.md)| Прийнято |
 | 011 | [gRPC як опційний синхронний транспорт для confirmation-кроку](011-grpc-for-confirmation-transport.md)| Прийнято |
