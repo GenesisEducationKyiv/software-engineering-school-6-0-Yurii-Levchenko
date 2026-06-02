@@ -1,18 +1,21 @@
 # Filebeat config — ships the app's container logs to Elasticsearch.
 #
 # Approach: an explicit `container` input that tails every container's
-# stdout log file directly, then drops everything that isn't our app.
+# stdout log file directly, then keeps only containers that opted in.
 # (We deliberately avoid hints-based docker autodiscover — it proved
 # finicky on Docker Desktop and silently created zero inputs.)
 #
 # Pipeline per line:
 #   1. `container` input unwraps Docker's json-file envelope
 #      ({"log":"<app line>","stream":"stdout","time":...}) → message = app line.
-#   2. the `ndjson` parser parses that app line (our slog JSON) and lifts its
-#      fields (level, msg, repo, request_id, ...) to the document root.
-#   3. add_docker_metadata enriches with container.* (name, image, id).
-#   4. drop_event removes any container whose image isn't our app, so
-#      Elasticsearch only holds notifier logs (no postgres/redis/kibana noise).
+#   2. add_docker_metadata enriches with container.* (name, image, id, labels).
+#   3. drop_event keeps ONLY containers carrying the `logging: notifier` label
+#      (set on the app service in docker-compose.yml), so Elasticsearch holds
+#      just our app's logs (no postgres/redis/kibana noise). A label is used —
+#      not the container/image name — so the filter is an explicit opt-in that
+#      survives project renames and works with multiple replicas.
+#   4. decode_json_fields parses the app's slog JSON line and lifts its fields
+#      (level, msg, repo, request_id, ...) to the document root for Kibana.
 
 filebeat.inputs:
   - type: container
@@ -21,12 +24,13 @@ filebeat.inputs:
 
 processors:
   - add_docker_metadata: ~
-  # Drop everything that isn't our app BEFORE decoding, to save work.
+  # Keep only containers explicitly opted in via the `logging: notifier`
+  # label. Dropped BEFORE decoding to save work on irrelevant containers.
   - drop_event:
       when:
         not:
-          contains:
-            container.image.name: "yurii-levchenko-app"
+          equals:
+            container.labels.logging: "notifier"
   # The container input leaves the app's slog line as a raw JSON string in
   # `message`. Decode it and lift level/msg/repo/request_id/... to the root
   # so they become first-class searchable fields in Kibana.
