@@ -61,7 +61,7 @@ func New(subs SubscriberRepository, tracking ReleaseTrackingStore, github Releas
 // The same ctx is also propagated to outgoing GitHub API calls so they can be canceled
 // when the application shuts down (no orphaned in-flight requests)
 func (s *Scanner) Start(ctx context.Context) {
-	slog.Info("scanner started", "interval", s.interval)
+	slog.Info("Scanner started", "interval", s.interval)
 
 	// runs immediately on startup, then on ticker
 	s.scan(ctx)
@@ -72,7 +72,7 @@ func (s *Scanner) Start(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Info("scanner stopped gracefully")
+			slog.Info("Scanner stopped gracefully")
 			return
 		case <-ticker.C:
 			s.scan(ctx)
@@ -85,11 +85,11 @@ func (s *Scanner) scan(ctx context.Context) {
 	metrics.ScannerRunsTotal.Inc()
 	repos, err := s.subs.GetActiveRepos()
 	if err != nil {
-		slog.Error("scanner failed to get active repos", "err", err)
+		slog.Error("Scanner failed to get active repos", "err", err)
 		return
 	}
 
-	slog.Info("scanner cycle started", "repo_count", len(repos))
+	slog.Info("Scanner cycle started", "repo_count", len(repos))
 
 	for _, repoStr := range repos {
 		s.checkRepo(ctx, repoStr)
@@ -167,10 +167,11 @@ func (s *Scanner) recordAndNotify(repoStr, newTag string) {
 	for _, sub := range subscribers {
 		unsubURL := fmt.Sprintf("%s/api/unsubscribe/%s", s.baseURL, sub.Token)
 		if err := s.notifier.SendReleaseNotification(sub.Email, repoStr, newTag, unsubURL); err != nil {
-			slog.Error("Scanner failed to notify subscriber", "email", sub.Email, "repo", repoStr, "err", err)
+			// Log the subscription's pk
+			slog.Error("Scanner failed to notify subscriber", "subscription_id", sub.ID, "repo", repoStr, "err", err)
 			continue
 		}
 		metrics.NotificationsSent.Inc()
-		slog.Info("Scanner notified subscriber", "email", sub.Email, "repo", repoStr, "tag", newTag)
+		slog.Info("Scanner notified subscriber", "subscription_id", sub.ID, "repo", repoStr, "tag", newTag)
 	}
 }

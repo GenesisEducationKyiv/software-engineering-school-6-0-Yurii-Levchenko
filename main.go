@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -29,6 +30,18 @@ import (
 )
 
 func main() {
+	// Keep main() thin: all logic lives in run() so that deferred cleanup
+	// (db.Close, redisCache.Close, cancel) actually executes.
+	if err := run(); err != nil {
+		slog.Error("application exited with error", "err", err)
+		// os.Exit skips defers, so we only ever call it here, after run() has returned and its defers have run.
+		os.Exit(1)
+	}
+}
+
+// run wires dependencies, starts the server + scanner, and blocks until a
+// shutdown signal or a fatal server error
+func run() error {
 	// Load .env file (ignored in Docker where env vars are set directly)
 	_ = godotenv.Load()
 
@@ -42,8 +55,7 @@ func main() {
 	slog.Info("Connecting to database")
 	db, err := sqlx.Connect("postgres", cfg.DatabaseURL)
 	if err != nil {
-		slog.Error("Failed to connect to database", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("connect to database: %w", err)
 	}
 	defer db.Close()
 	slog.Info("Database connected")
@@ -51,8 +63,7 @@ func main() {
 	// --- Run Migrations ---
 	slog.Info("Running database migrations")
 	if err := runMigrations(cfg.DatabaseURL); err != nil {
-		slog.Error("Failed to run migrations", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("run migrations: %w", err)
 	}
 	slog.Info("Migrations completed")
 
@@ -107,21 +118,25 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	// Start server in a goroutine
+	// Start server in a goroutine; a fatal listen error is surfaced via the
+	// channel so run() can return it (and defers can clean up).
+	serverErr := make(chan error, 1)
 	go func() {
 		slog.Info("Server starting", "port", cfg.AppPort)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("Server failed", "err", err)
-			os.Exit(1)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErr <- err
 		}
 	}()
 
-	// Wait for interrupt signal (Ctrl+C or Docker stop)
+	// Block until either the server fails or we get a shutdown signal.
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-
-	slog.Info("Shutting down gracefully")
+	select {
+	case err := <-serverErr:
+		return fmt.Errorf("http server: %w", err)
+	case <-quit:
+		slog.Info("Shutting down gracefully")
+	}
 
 	// Stop scanner
 	cancel()
@@ -131,10 +146,10 @@ func main() {
 	defer shutdownCancel()
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		slog.Error("Server forced to shutdown", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("server shutdown: %w", err)
 	}
 	slog.Info("Server stopped")
+	return nil
 }
 
 // applies all pending SQL migrations

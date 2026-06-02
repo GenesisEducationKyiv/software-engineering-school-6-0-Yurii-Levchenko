@@ -8,20 +8,15 @@ import (
 	"github.com/google/uuid"
 )
 
-// RequestIDHeader is the HTTP header used to read/propagate a request id.
+// HTTP header used to read/propagate a request id.
 const RequestIDHeader = "X-Request-ID"
 
-// RequestLogger is a Gin middleware that emits one structured (slog) access
-// log line per request and attaches a request id for correlation.
-//
-// It replaces Gin's default text logger (the "[GIN] ... | 200 | ..." line).
 // Each request gets an id (taken from the X-Request-ID header if the client
 // sent one, otherwise generated), which is echoed back in the response header
 // so a client/log reader can correlate a request across systems.
-//
-// The logged fields (method, path, status, duration_ms, request_id, client_ip)
-// give the RED signals — rate, errors (via status), duration — at the log
-// layer, complementing the Prometheus metrics.
+
+// The logged fields give the RED signals — rate, errors (via status),
+// duration — at the log layer, complementing the Prometheus metrics
 func RequestLogger() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
@@ -52,11 +47,11 @@ func RequestLogger() gin.HandlerFunc {
 		// can filter by level alone.
 		switch {
 		case status >= 500:
-			slog.Error("http request", attrs...)
+			slog.Error("HTTP request", attrs...)
 		case status >= 400:
-			slog.Warn("http request", attrs...)
+			slog.Warn("HTTP request", attrs...)
 		default:
-			slog.Info("http request", attrs...)
+			slog.Info("HTTP request", attrs...)
 		}
 	}
 }
