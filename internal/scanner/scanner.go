@@ -178,7 +178,7 @@ func (s *Scanner) recordAndNotify(repoStr, newTag string) {
 		unsubURL := fmt.Sprintf("%s/api/unsubscribe/%s", s.baseURL, sub.Token)
 		if err := s.notifier.SendReleaseNotification(sub.Email, repoStr, newTag, unsubURL); err != nil {
 			metrics.ScannerErrorsTotal.WithLabelValues("notify").Inc()
-			// Log subscription_id, not email (PII): SELECT email FROM subscriptions WHERE id=?
+			// Log subscription's pk
 			slog.Error("Scanner failed to notify subscriber", "subscription_id", sub.ID, "repo", repoStr, "err", err)
 			continue
 		}
