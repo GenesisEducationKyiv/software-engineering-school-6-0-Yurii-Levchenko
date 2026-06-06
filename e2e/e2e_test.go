@@ -29,8 +29,8 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 
+	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
 	"github.com/playwright-community/playwright-go"
@@ -100,11 +100,22 @@ func newPage(t *testing.T) playwright.Page {
 	return page
 }
 
-// uniqueEmail returns an email unlikely to collide with other tests.
-// E2E doesn't TRUNCATE between tests (we run against a real app), so
-// isolation is by unique email per test.
-func uniqueEmail(prefix string) string {
-	return fmt.Sprintf("%s-e2e-%d@example.com", prefix, time.Now().UnixNano())
+// uniqueEmail returns a collision-proof email (UUID) and registers a cleanup that deletes
+// the subscriptions this email created. E2E runs against a real, persistent
+// DB (no TRUNCATE), so isolation is by unique email; we tidy up per test to
+// avoid accumulating junk rows across runs. The shared `repositories` row is
+// left as-is (bounded set of repos, upserted, harmless).
+func uniqueEmail(t *testing.T, prefix string) string {
+	t.Helper()
+	email := fmt.Sprintf("%s-e2e-%s@example.com", prefix, uuid.NewString())
+
+	t.Cleanup(func() {
+		if _, err := db.Exec(`DELETE FROM subscriptions WHERE email = $1`, email); err != nil {
+			t.Logf("cleanup: delete subscriptions for %s: %v", email, err)
+		}
+	})
+
+	return email
 }
 
 // step wraps a Playwright operation and aborts the test on error. It
@@ -170,7 +181,7 @@ func TestE2E_HomePage_Renders(t *testing.T) {
 
 func TestE2E_Subscribe_HappyPath(t *testing.T) {
 	page := newPage(t)
-	email := uniqueEmail("alice-happy")
+	email := uniqueEmail(t, "alice-happy")
 
 	// Setup
 	navigate(t, page, appBaseURL+"/")
@@ -207,7 +218,7 @@ func TestE2E_Subscribe_HappyPath(t *testing.T) {
 
 func TestE2E_Subscribe_Duplicate_ShowsConflict(t *testing.T) {
 	page := newPage(t)
-	email := uniqueEmail("alice-dup")
+	email := uniqueEmail(t, "alice-dup")
 
 	navigate(t, page, appBaseURL+"/")
 
@@ -237,7 +248,7 @@ func TestE2E_Subscribe_Duplicate_ShowsConflict(t *testing.T) {
 
 func TestE2E_LoadSubscriptions_EmptyForUnknownEmail(t *testing.T) {
 	page := newPage(t)
-	email := uniqueEmail("nobody")
+	email := uniqueEmail(t, "nobody")
 
 	navigate(t, page, appBaseURL+"/")
 
@@ -257,7 +268,7 @@ func TestE2E_LoadSubscriptions_EmptyForUnknownEmail(t *testing.T) {
 
 func TestE2E_LoadSubscriptions_AfterConfirmation_ShowsRepo(t *testing.T) {
 	page := newPage(t)
-	email := uniqueEmail("alice-confirmed")
+	email := uniqueEmail(t, "alice-confirmed")
 
 	// Setup step 1: subscribe via the form.
 	navigate(t, page, appBaseURL+"/")

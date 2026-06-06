@@ -53,7 +53,9 @@ go test -tags=e2e -v -run TestE2E_Subscribe_HappyPath ./e2e/...
 ## Notes
 
 - E2E tests do **not** truncate the DB. Each test uses a unique email
-  (`<prefix>-e2e-<unixnano>@example.com`) for isolation.
+  (`<prefix>-e2e-<uuid>@example.com`) for isolation and deletes its own
+  `subscriptions` rows on cleanup, so runs don't accumulate junk. The shared
+  `repositories` row is left as-is (bounded set, upserted, harmless).
 - DB access is only used in scenario 5 to fetch the confirmation token —
   in production the user would click a link in their email; we can't
   reach a real mail UI from a test, so the DB is the cleanest substitute.
