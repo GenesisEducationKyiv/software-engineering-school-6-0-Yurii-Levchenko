@@ -51,9 +51,15 @@ func (n *Notifier) sendEmail(to, subject, body string) error {
 		"From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=\"utf-8\"\r\n\r\n%s",
 		n.from, to, subject, body,
 	)
-	// connects to (in my case Mailtrap) SMTP server and sends the email
-	auth := smtp.PlainAuth("", n.user, n.pass, n.host)
 	addr := fmt.Sprintf("%s:%s", n.host, n.port)
 
+	// Skip AUTH when no credentials are configured. Mailpit/MailHog and
+	// local Postfix relays typically accept anonymous SMTP; passing a
+	// PlainAuth with empty user would send AUTH PLAIN with empty creds
+	// which some servers reject.
+	var auth smtp.Auth
+	if n.user != "" {
+		auth = smtp.PlainAuth("", n.user, n.pass, n.host)
+	}
 	return smtp.SendMail(addr, auth, n.from, []string{to}, []byte(msg))
 }

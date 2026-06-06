@@ -25,6 +25,15 @@ services:
       timeout: 5s
       retries: 5
 
+  # Mailpit: fake SMTP server for local dev and E2E tests.
+  # Captures every email sent by the app; nothing leaves the host.
+  # SMTP on 1025, web UI on http://localhost:8025 for inspection.
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "1025:1025"  # SMTP
+      - "8025:8025"  # Web UI
+
   app:
     build: .
     ports:
@@ -32,13 +41,23 @@ services:
     env_file:
       - .env
     environment:
+      # These override values from .env so the app inside Docker reaches
+      # services by container hostname (and uses Mailpit instead of
+      # Mailtrap for deterministic, rate-limit-free email).
       DATABASE_URL: postgres://postgres:postgres@db:5432/notifier?sslmode=disable
       REDIS_URL: redis://redis:6379/0
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_USER: ""
+      SMTP_PASS: ""
+      SMTP_FROM: noreply@github-notifier.local
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
+      mailpit:
+        condition: service_started
     restart: on-failure
 
 volumes:
