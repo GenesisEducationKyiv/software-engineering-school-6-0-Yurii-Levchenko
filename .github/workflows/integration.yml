@@ -24,7 +24,9 @@ jobs:
         env:
           GOTOOLCHAIN: auto
 
+      # -race: the test process runs the real server + service in-process,
+      # so the detector covers concurrent request handling too.
       - name: Run integration tests
-        run: go test -tags=integration -v ./internal/integration/...
+        run: go test -race -tags=integration -v ./internal/integration/...
         env:
           GOTOOLCHAIN: auto

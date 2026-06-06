@@ -80,8 +80,8 @@ Each test layer has its own workflow:
 | Workflow file | What runs |
 |---|---|
 | `.github/workflows/lint.yml` | `golangci-lint` |
-| `.github/workflows/unit.yml` | `go test ./...` |
-| `.github/workflows/integration.yml` | `go test -tags=integration ./internal/integration/...` |
+| `.github/workflows/unit.yml` | `go test -race ./...` |
+| `.github/workflows/integration.yml` | `go test -race -tags=integration ./internal/integration/...` |
 | `.github/workflows/e2e.yml` | docker-compose + playwright + `go test -tags=e2e ./e2e/...` |
 
 Each one triggers on every `push` to `main` and every `pull_request`,

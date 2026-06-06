@@ -52,10 +52,24 @@ jobs:
           docker compose logs
           exit 1
 
-      - name: Install Playwright CLI
-        run: go install github.com/playwright-community/playwright-go/cmd/playwright@latest
+      # Pin the CLI to the playwright-go version in go.mod. The Go library
+      # and the CLI speak the same driver protocol, so they MUST match;
+      # `@latest` could install a newer CLI and break at runtime.
+      - name: Install Playwright CLI (version pinned to go.mod)
+        run: go install github.com/playwright-community/playwright-go/cmd/playwright@$(go list -m -f '{{.Version}}' github.com/playwright-community/playwright-go)
         env:
           GOTOOLCHAIN: auto
+
+      # Cache the downloaded Chromium binary (~150MB) across runs. setup-go
+      # already caches Go modules/build, but not this. Keyed on go.sum so it
+      # invalidates when the playwright version bumps.
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            playwright-${{ runner.os }}-
 
       - name: Install Chromium and OS deps
         run: playwright install --with-deps chromium
