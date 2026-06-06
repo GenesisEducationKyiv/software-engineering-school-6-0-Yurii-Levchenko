@@ -7,6 +7,13 @@ import (
 	"log"
 )
 
+// Cache values for repo_exists results. We serialize booleans as
+// strings because the cache (Redis) is string-valued.
+const (
+	cachedTrue  = "true"
+	cachedFalse = "false"
+)
+
 // Cacher defines what the cached client needs from the cache layer
 type Cacher interface {
 	Get(key string) (string, error)
@@ -44,12 +51,12 @@ func (cc *CachedClient) CheckRepoExists(ctx context.Context, owner, repo string)
 	if err != nil {
 		log.Printf("Cache error (non-fatal): %v", err)
 	}
-	if val == "true" {
+	if val == cachedTrue {
 		metrics.GitHubAPICalls.WithLabelValues("check_repo", "hit").Inc()
 		log.Printf("Cache HIT: %s exists", key)
 		return true, nil
 	}
-	if val == "false" {
+	if val == cachedFalse {
 		metrics.GitHubAPICalls.WithLabelValues("check_repo", "hit").Inc()
 		log.Printf("Cache HIT: %s not found", key)
 		return false, nil
@@ -64,9 +71,9 @@ func (cc *CachedClient) CheckRepoExists(ctx context.Context, owner, repo string)
 	}
 
 	// store result in cache
-	cacheVal := "false"
+	cacheVal := cachedFalse
 	if exists {
-		cacheVal = "true"
+		cacheVal = cachedTrue
 	}
 	if cacheErr := cc.cache.Set(key, cacheVal); cacheErr != nil {
 		log.Printf("Cache write error (non-fatal): %v", cacheErr)
