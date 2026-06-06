@@ -13,7 +13,7 @@ import (
 func get(t *testing.T, url string) (int, map[string]any) {
 	t.Helper()
 
-	resp, err := http.Get(url)
+	resp, err := testClient.Get(url)
 	if err != nil {
 		t.Fatalf("GET %s: %v", url, err)
 	}

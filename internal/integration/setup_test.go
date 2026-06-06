@@ -17,8 +17,11 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"sort"
 	"testing"
 	"time"
 
@@ -39,6 +42,11 @@ import (
 var (
 	testDB *sqlx.DB
 )
+
+// testClient is shared by all request helpers; its timeout makes a hung
+// request fail fast (5s) instead of blocking until the global `go test`
+// timeout (10 min by default).
+var testClient = &http.Client{Timeout: 5 * time.Second}
 
 // TestMain spins up a Postgres container, runs migrations against it,
 // runs all tests, and tears the container down.
@@ -84,16 +92,29 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// runMigrations applies the up migration SQL. We read the file directly
-// instead of using golang-migrate because the path resolution from inside
-// a test package is awkward and this migration is a single file.
+// runMigrations applies every *.up.sql migration in lexical order. The
+// zero-padded numeric prefix (000001_, 000002_, ...) makes lexical order ==
+// chronological order, so we pick up new migrations automatically. We read
+// the files directly instead of using golang-migrate because the container
+// is recreated each run, so version tracking and down-migrations add nothing.
 func runMigrations(db *sqlx.DB) error {
-	sqlBytes, err := os.ReadFile("../../migrations/000001_init.up.sql")
+	files, err := filepath.Glob("../../migrations/*.up.sql")
 	if err != nil {
-		return fmt.Errorf("read migration file: %w", err)
+		return fmt.Errorf("glob migrations: %w", err)
 	}
-	if _, err := db.Exec(string(sqlBytes)); err != nil {
-		return fmt.Errorf("execute migration: %w", err)
+	if len(files) == 0 {
+		return fmt.Errorf("no migration files found in ../../migrations")
+	}
+	sort.Strings(files)
+
+	for _, f := range files {
+		sqlBytes, err := os.ReadFile(f)
+		if err != nil {
+			return fmt.Errorf("read migration %s: %w", f, err)
+		}
+		if _, err := db.Exec(string(sqlBytes)); err != nil {
+			return fmt.Errorf("execute migration %s: %w", f, err)
+		}
 	}
 	return nil
 }
@@ -115,6 +136,15 @@ type testApp struct {
 // The teardown is registered via t.Cleanup.
 func newTestApp(t *testing.T) *testApp {
 	t.Helper()
+	// apiKey="" disables the auth middleware — the common case for most tests.
+	return newTestAppWithKey(t, "")
+}
+
+// newTestAppWithKey is like newTestApp but wires the auth middleware with the
+// given API key, so tests can exercise the authenticated path (missing /
+// wrong / correct key). apiKey="" disables auth.
+func newTestAppWithKey(t *testing.T, apiKey string) *testApp {
+	t.Helper()
 
 	if _, err := testDB.Exec(
 		`TRUNCATE TABLE subscriptions, repositories RESTART IDENTITY`,
@@ -128,8 +158,9 @@ func newTestApp(t *testing.T) *testApp {
 	repo := repository.New(testDB)
 	svc := service.New(repo, repo, gh, notif, "http://test.local")
 
-	// apiKey="" disables auth middleware; staticIndexPath="" skips the "/" route.
-	router := app.BuildRouter(svc, "", "")
+	// staticIndexPath="" skips the "/" route (the file is not at a predictable
+	// relative path from the test package).
+	router := app.BuildRouter(svc, apiKey, "")
 	server := httptest.NewServer(router)
 
 	t.Cleanup(func() {

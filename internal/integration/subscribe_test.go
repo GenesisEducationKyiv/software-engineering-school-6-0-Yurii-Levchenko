@@ -21,7 +21,7 @@ func post(t *testing.T, url string, body any) (int, map[string]any) {
 		t.Fatalf("marshal body: %v", err)
 	}
 
-	resp, err := http.Post(url, "application/json", bytes.NewReader(buf))
+	resp, err := testClient.Post(url, "application/json", bytes.NewReader(buf))
 	if err != nil {
 		t.Fatalf("POST %s: %v", url, err)
 	}

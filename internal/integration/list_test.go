@@ -14,7 +14,7 @@ import (
 func getRaw(t *testing.T, url string) (int, []byte) {
 	t.Helper()
 
-	resp, err := http.Get(url)
+	resp, err := testClient.Get(url)
 	if err != nil {
 		t.Fatalf("GET %s: %v", url, err)
 	}
