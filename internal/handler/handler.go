@@ -2,7 +2,6 @@ package handler
 
 import (
 	"github-release-notifier/internal/metrics"
-	"github-release-notifier/internal/model"
 	"github-release-notifier/internal/subscription"
 	"net/http"
 
@@ -103,7 +102,7 @@ func (h *Handler) GetSubscriptions(c *gin.Context) {
 
 	// return empty array instead of nil (null)
 	if subs == nil {
-		subs = []model.Subscription{}
+		subs = []subscription.Subscription{}
 	}
 
 	c.JSON(http.StatusOK, subs)

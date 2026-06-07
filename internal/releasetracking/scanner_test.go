@@ -1,4 +1,4 @@
-package scanner
+package releasetracking
 
 import (
 	"context"
@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github-release-notifier/internal/model"
 	"github-release-notifier/internal/subscription"
 )
 
@@ -39,7 +38,7 @@ func (f *fakeSubs) SubscribersForRepo(repo string) ([]subscription.Subscriber, e
 
 // fakeTracking implements ReleaseTrackingStore.
 type fakeTracking struct {
-	state     map[string]*model.Repository // repo -> tracking row
+	state     map[string]*Repository // repo -> tracking row
 	getErr    error
 	upsertErr error
 	upserted  map[string]string // repo -> tag that was upserted
@@ -47,12 +46,12 @@ type fakeTracking struct {
 
 func newFakeTracking() *fakeTracking {
 	return &fakeTracking{
-		state:    map[string]*model.Repository{},
+		state:    map[string]*Repository{},
 		upserted: map[string]string{},
 	}
 }
 
-func (f *fakeTracking) GetRepoTracking(repo string) (*model.Repository, error) {
+func (f *fakeTracking) GetRepoTracking(repo string) (*Repository, error) {
 	if f.getErr != nil {
 		return nil, f.getErr
 	}
@@ -128,7 +127,7 @@ func TestDetectNewRelease_FirstSeenTag_ReturnsTrue(t *testing.T) {
 func TestDetectNewRelease_NewerTagThanTracked_ReturnsTrue(t *testing.T) {
 	s, _, tracking, release, _ := newScanner()
 	release.tags["golang/go"] = "v1.22.0"
-	tracking.state["golang/go"] = &model.Repository{Repo: "golang/go", LastSeenTag: "v1.21.0"}
+	tracking.state["golang/go"] = &Repository{Repo: "golang/go", LastSeenTag: "v1.21.0"}
 
 	tag, ok := s.detectNewRelease(context.Background(), "golang/go")
 	if !ok || tag != "v1.22.0" {
@@ -139,7 +138,7 @@ func TestDetectNewRelease_NewerTagThanTracked_ReturnsTrue(t *testing.T) {
 func TestDetectNewRelease_UnchangedTag_ReturnsFalse(t *testing.T) {
 	s, _, tracking, release, _ := newScanner()
 	release.tags["golang/go"] = "v1.22.0"
-	tracking.state["golang/go"] = &model.Repository{Repo: "golang/go", LastSeenTag: "v1.22.0"}
+	tracking.state["golang/go"] = &Repository{Repo: "golang/go", LastSeenTag: "v1.22.0"}
 
 	_, ok := s.detectNewRelease(context.Background(), "golang/go")
 	if ok {
@@ -289,7 +288,7 @@ func TestCheckRepo_NewRelease_PersistsAndNotifies(t *testing.T) {
 func TestCheckRepo_UnchangedTag_DoesNothing(t *testing.T) {
 	s, subs, tracking, release, notifier := newScanner()
 	release.tags["golang/go"] = "v1.22.0"
-	tracking.state["golang/go"] = &model.Repository{LastSeenTag: "v1.22.0"}
+	tracking.state["golang/go"] = &Repository{LastSeenTag: "v1.22.0"}
 	subs.subscribersByRepo["golang/go"] = []subscription.Subscriber{
 		{Email: "a@b.com", Token: "tok-A"},
 	}

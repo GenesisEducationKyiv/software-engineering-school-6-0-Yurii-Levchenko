@@ -17,8 +17,7 @@ import (
 	"github-release-notifier/internal/githubgateway"
 	"github-release-notifier/internal/logging"
 	"github-release-notifier/internal/notification"
-	"github-release-notifier/internal/repository"
-	"github-release-notifier/internal/scanner"
+	"github-release-notifier/internal/releasetracking"
 	"github-release-notifier/internal/subscription"
 
 	"github.com/golang-migrate/migrate/v4"
@@ -80,13 +79,13 @@ func run() error {
 	}
 
 	// --- Initialize Dependencies ---
-	repo := repository.New(db)
+	trackStore := releasetracking.NewStore(db)
 	subStore := subscription.NewStore(db)
 	ghClient := githubgateway.New(cfg.GitHubToken)
 
 	// wrap GitHub client with Redis cache if available
 	var ghService subscription.GitHubClient
-	var scannerGH scanner.ReleaseChecker
+	var scannerGH releasetracking.ReleaseChecker
 	if redisCache != nil {
 		cachedGH := githubgateway.NewCachedClient(ghClient, redisCache)
 		ghService = cachedGH
@@ -97,13 +96,13 @@ func run() error {
 	}
 
 	emailNotifier := notification.NewSMTPSender(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUser, cfg.SMTPPass, cfg.SMTPFrom)
-	svc := subscription.New(subStore, repo, ghService, emailNotifier, cfg.BaseURL)
+	svc := subscription.New(subStore, trackStore, ghService, emailNotifier, cfg.BaseURL)
 
 	// --- Start Background Scanner with context for graceful shutdown ---
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	releaseScanner := scanner.New(svc, repo, scannerGH, emailNotifier, cfg.ScanIntervalSecs, cfg.BaseURL)
+	releaseScanner := releasetracking.New(svc, trackStore, scannerGH, emailNotifier, cfg.ScanIntervalSecs, cfg.BaseURL)
 	go releaseScanner.Start(ctx)
 
 	// --- Setup Router ---

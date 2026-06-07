@@ -3,7 +3,6 @@ package subscription
 import (
 	"context"
 	"fmt"
-	"github-release-notifier/internal/model"
 	"github-release-notifier/internal/repospec"
 	"regexp"
 
@@ -15,14 +14,14 @@ import (
 // We split this from a previous fat RepositoryStore interface (ISP):
 // each consumer now depends only on the methods it actually calls
 type SubscriptionStore interface {
-	CreateSubscription(sub *model.Subscription) error
-	GetSubscriptionByToken(token string) (*model.Subscription, error)
-	GetSubscriptionByEmailAndRepo(email, repo string) (*model.Subscription, error)
+	CreateSubscription(sub *Subscription) error
+	GetSubscriptionByToken(token string) (*Subscription, error)
+	GetSubscriptionByEmailAndRepo(email, repo string) (*Subscription, error)
 	ConfirmSubscription(token string) error
 	DeleteSubscription(token string) error
-	GetActiveSubscriptionsByEmail(email string) ([]model.Subscription, error)
+	GetActiveSubscriptionsByEmail(email string) ([]Subscription, error)
 	GetActiveRepos() ([]string, error)
-	GetSubscribersByRepo(repo string) ([]model.Subscription, error)
+	GetSubscribersByRepo(repo string) ([]Subscription, error)
 }
 
 // RepoTracker is the minimum interface service needs from the tracking
@@ -112,7 +111,7 @@ func (s *Service) Subscribe(ctx context.Context, email, repoStr string) error {
 
 	// 5. Create subscription with a unique token
 	token := uuid.New().String()
-	sub := &model.Subscription{
+	sub := &Subscription{
 		Email:     email,
 		Repo:      repoStr,
 		Token:     token,
@@ -173,7 +172,7 @@ func (s *Service) Unsubscribe(token string) error {
 }
 
 // returns all active subscriptions for email. basically runs SQL query
-func (s *Service) GetSubscriptions(email string) ([]model.Subscription, error) {
+func (s *Service) GetSubscriptions(email string) ([]Subscription, error) {
 	if !ValidateEmail(email) {
 		return nil, ErrInvalidEmail
 	}

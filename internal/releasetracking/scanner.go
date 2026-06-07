@@ -1,10 +1,9 @@
-package scanner
+package releasetracking
 
 import (
 	"context"
 	"fmt"
 	"github-release-notifier/internal/metrics"
-	"github-release-notifier/internal/model"
 	"github-release-notifier/internal/repospec"
 	"github-release-notifier/internal/subscription"
 	"log/slog"
@@ -23,7 +22,7 @@ type SubscriberSource interface {
 // ReleaseTrackingStore reads and writes the per-repo last-seen-tag
 // state that scanner uses to detect new releases
 type ReleaseTrackingStore interface {
-	GetRepoTracking(repo string) (*model.Repository, error)
+	GetRepoTracking(repo string) (*Repository, error)
 	UpsertRepoTracking(repo, lastSeenTag string) error
 }
 

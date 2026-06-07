@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github-release-notifier/internal/model"
 	"testing"
 )
 
@@ -12,27 +11,27 @@ import (
 // These implement the interfaces defined in service.go
 
 type mockRepo struct {
-	subscriptions map[string]*model.Subscription // keyed by "email|repo"
-	tokenMap      map[string]*model.Subscription // keyed by token
-	repoTracking  map[string]string              // repo -> lastSeenTag
+	subscriptions map[string]*Subscription // keyed by "email|repo"
+	tokenMap      map[string]*Subscription // keyed by token
+	repoTracking  map[string]string        // repo -> lastSeenTag
 }
 
 func newMockRepo() *mockRepo {
 	return &mockRepo{
-		subscriptions: make(map[string]*model.Subscription),
-		tokenMap:      make(map[string]*model.Subscription),
+		subscriptions: make(map[string]*Subscription),
+		tokenMap:      make(map[string]*Subscription),
 		repoTracking:  make(map[string]string),
 	}
 }
 
-func (m *mockRepo) CreateSubscription(sub *model.Subscription) error {
+func (m *mockRepo) CreateSubscription(sub *Subscription) error {
 	key := sub.Email + "|" + sub.Repo
 	m.subscriptions[key] = sub
 	m.tokenMap[sub.Token] = sub
 	return nil
 }
 
-func (m *mockRepo) GetSubscriptionByToken(token string) (*model.Subscription, error) {
+func (m *mockRepo) GetSubscriptionByToken(token string) (*Subscription, error) {
 	sub, ok := m.tokenMap[token]
 	if !ok {
 		return nil, nil
@@ -40,7 +39,7 @@ func (m *mockRepo) GetSubscriptionByToken(token string) (*model.Subscription, er
 	return sub, nil
 }
 
-func (m *mockRepo) GetSubscriptionByEmailAndRepo(email, repo string) (*model.Subscription, error) {
+func (m *mockRepo) GetSubscriptionByEmailAndRepo(email, repo string) (*Subscription, error) {
 	key := email + "|" + repo
 	sub, ok := m.subscriptions[key]
 	if !ok {
@@ -65,8 +64,8 @@ func (m *mockRepo) DeleteSubscription(token string) error {
 	return nil
 }
 
-func (m *mockRepo) GetActiveSubscriptionsByEmail(email string) ([]model.Subscription, error) {
-	var result []model.Subscription
+func (m *mockRepo) GetActiveSubscriptionsByEmail(email string) ([]Subscription, error) {
+	var result []Subscription
 	for _, sub := range m.subscriptions {
 		if sub.Email == email && sub.Confirmed {
 			result = append(result, *sub)
@@ -92,8 +91,8 @@ func (m *mockRepo) GetActiveRepos() ([]string, error) {
 	return repos, nil
 }
 
-func (m *mockRepo) GetSubscribersByRepo(repo string) ([]model.Subscription, error) {
-	var subs []model.Subscription
+func (m *mockRepo) GetSubscribersByRepo(repo string) ([]Subscription, error) {
+	var subs []Subscription
 	for _, sub := range m.subscriptions {
 		if sub.Repo == repo && sub.Confirmed {
 			subs = append(subs, *sub)
