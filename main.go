@@ -14,7 +14,7 @@ import (
 	"github-release-notifier/internal/app"
 	"github-release-notifier/internal/cache"
 	"github-release-notifier/internal/config"
-	"github-release-notifier/internal/github"
+	"github-release-notifier/internal/githubgateway"
 	"github-release-notifier/internal/logging"
 	"github-release-notifier/internal/notification"
 	"github-release-notifier/internal/repository"
@@ -81,13 +81,13 @@ func run() error {
 
 	// --- Initialize Dependencies ---
 	repo := repository.New(db)
-	ghClient := github.New(cfg.GitHubToken)
+	ghClient := githubgateway.New(cfg.GitHubToken)
 
 	// wrap GitHub client with Redis cache if available
 	var ghService service.GitHubClient
 	var scannerGH scanner.ReleaseChecker
 	if redisCache != nil {
-		cachedGH := github.NewCachedClient(ghClient, redisCache)
+		cachedGH := githubgateway.NewCachedClient(ghClient, redisCache)
 		ghService = cachedGH
 		scannerGH = cachedGH
 	} else {
