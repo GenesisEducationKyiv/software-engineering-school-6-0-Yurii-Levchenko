@@ -16,7 +16,7 @@ import (
 	"github-release-notifier/internal/config"
 	"github-release-notifier/internal/github"
 	"github-release-notifier/internal/logging"
-	"github-release-notifier/internal/notifier"
+	"github-release-notifier/internal/notification"
 	"github-release-notifier/internal/repository"
 	"github-release-notifier/internal/scanner"
 	"github-release-notifier/internal/service"
@@ -95,7 +95,7 @@ func run() error {
 		scannerGH = ghClient
 	}
 
-	emailNotifier := notifier.New(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUser, cfg.SMTPPass, cfg.SMTPFrom)
+	emailNotifier := notification.NewSMTPSender(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUser, cfg.SMTPPass, cfg.SMTPFrom)
 	svc := service.New(repo, repo, ghService, emailNotifier, cfg.BaseURL)
 
 	// --- Start Background Scanner with context for graceful shutdown ---
