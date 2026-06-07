@@ -103,7 +103,7 @@ func run() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	releaseScanner := scanner.New(subStore, repo, scannerGH, emailNotifier, cfg.ScanIntervalSecs, cfg.BaseURL)
+	releaseScanner := scanner.New(svc, repo, scannerGH, emailNotifier, cfg.ScanIntervalSecs, cfg.BaseURL)
 	go releaseScanner.Start(ctx)
 
 	// --- Setup Router ---
