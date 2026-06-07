@@ -3,14 +3,14 @@
 // BuildRouter is called from main.go (production) and from integration
 // tests so both exercise the same router. External dependencies (DB,
 // GitHub client, notifier) are constructed by the caller and reach this
-// function via *service.Service.
+// function via *subscription.Service.
 package app
 
 import (
 	"github-release-notifier/internal/handler"
 	"github-release-notifier/internal/metrics"
 	"github-release-notifier/internal/middleware"
-	"github-release-notifier/internal/service"
+	"github-release-notifier/internal/subscription"
 
 	"github.com/gin-gonic/gin"
 )
@@ -21,7 +21,7 @@ import (
 // staticIndexPath: if non-empty, "/" serves that file as the subscription page;
 // pass "" to skip the route (useful in integration tests where the file is not
 // at a predictable relative path).
-func BuildRouter(svc *service.Service, apiKey, staticIndexPath string) *gin.Engine {
+func BuildRouter(svc *subscription.Service, apiKey, staticIndexPath string) *gin.Engine {
 	router := gin.New()
 	router.Use(gin.Recovery())
 	router.Use(middleware.RequestLogger())

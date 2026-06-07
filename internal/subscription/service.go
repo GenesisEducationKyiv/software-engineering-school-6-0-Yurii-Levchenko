@@ -1,4 +1,4 @@
-package service
+package subscription
 
 import (
 	"context"
@@ -21,6 +21,8 @@ type SubscriptionStore interface {
 	ConfirmSubscription(token string) error
 	DeleteSubscription(token string) error
 	GetActiveSubscriptionsByEmail(email string) ([]model.Subscription, error)
+	GetActiveRepos() ([]string, error)
+	GetSubscribersByRepo(repo string) ([]model.Subscription, error)
 }
 
 // RepoTracker is the minimum interface service needs from the tracking
@@ -176,4 +178,25 @@ func (s *Service) GetSubscriptions(email string) ([]model.Subscription, error) {
 		return nil, ErrInvalidEmail
 	}
 	return s.subs.GetActiveSubscriptionsByEmail(email)
+}
+
+// ActiveRepos returns every repo that has at least one confirmed subscription.
+// Part of the subscription facade — the release scanner reads it cross-domain
+// instead of querying the subscriptions table itself.
+func (s *Service) ActiveRepos() ([]string, error) {
+	return s.subs.GetActiveRepos()
+}
+
+// SubscribersForRepo returns confirmed subscribers of a repo as slim Subscriber
+// DTOs (the ACL): the full Subscription entity never leaves this domain.
+func (s *Service) SubscribersForRepo(repo string) ([]Subscriber, error) {
+	subs, err := s.subs.GetSubscribersByRepo(repo)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Subscriber, 0, len(subs))
+	for _, sub := range subs {
+		out = append(out, Subscriber{ID: sub.ID, Email: sub.Email, Token: sub.Token})
+	}
+	return out, nil
 }

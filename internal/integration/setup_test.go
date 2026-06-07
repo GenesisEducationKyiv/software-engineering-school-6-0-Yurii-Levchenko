@@ -27,7 +27,7 @@ import (
 
 	"github-release-notifier/internal/app"
 	"github-release-notifier/internal/repository"
-	"github-release-notifier/internal/service"
+	"github-release-notifier/internal/subscription"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jmoiron/sqlx"
@@ -156,7 +156,8 @@ func newTestAppWithKey(t *testing.T, apiKey string) *testApp {
 	notif := &fakeNotifier{}
 
 	repo := repository.New(testDB)
-	svc := service.New(repo, repo, gh, notif, "http://test.local")
+	subStore := subscription.NewStore(testDB)
+	svc := subscription.New(subStore, repo, gh, notif, "http://test.local")
 
 	// staticIndexPath="" skips the "/" route (the file is not at a predictable
 	// relative path from the test package).

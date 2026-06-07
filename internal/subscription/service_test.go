@@ -1,4 +1,4 @@
-package service
+package subscription
 
 import (
 	"context"
@@ -78,6 +78,28 @@ func (m *mockRepo) GetActiveSubscriptionsByEmail(email string) ([]model.Subscrip
 func (m *mockRepo) UpsertRepoTracking(repo, lastSeenTag string) error {
 	m.repoTracking[repo] = lastSeenTag
 	return nil
+}
+
+func (m *mockRepo) GetActiveRepos() ([]string, error) {
+	seen := map[string]bool{}
+	var repos []string
+	for _, sub := range m.subscriptions {
+		if sub.Confirmed && !seen[sub.Repo] {
+			seen[sub.Repo] = true
+			repos = append(repos, sub.Repo)
+		}
+	}
+	return repos, nil
+}
+
+func (m *mockRepo) GetSubscribersByRepo(repo string) ([]model.Subscription, error) {
+	var subs []model.Subscription
+	for _, sub := range m.subscriptions {
+		if sub.Repo == repo && sub.Confirmed {
+			subs = append(subs, *sub)
+		}
+	}
+	return subs, nil
 }
 
 type mockGitHub struct {
