@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github-release-notifier/internal/metrics"
 	"github-release-notifier/internal/model"
+	"github-release-notifier/internal/repospec"
 	"log/slog"
 	"time"
 )
@@ -122,7 +123,7 @@ func (s *Scanner) checkRepo(ctx context.Context, repoStr string) {
 // of: parse error, GitHub error, repo has no releases, tag unchanged.
 // All failures are logged here; callers just check the boolean
 func (s *Scanner) detectNewRelease(ctx context.Context, repoStr string) (string, bool) {
-	spec, err := model.ParseRepoSpec(repoStr)
+	spec, err := repospec.ParseRepoSpec(repoStr)
 	if err != nil {
 		slog.Warn("Scanner skipping invalid repo format", "repo", repoStr)
 		return "", false

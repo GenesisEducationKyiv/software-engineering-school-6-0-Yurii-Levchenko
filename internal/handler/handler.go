@@ -20,9 +20,15 @@ func New(svc *service.Service) *Handler {
 	return &Handler{svc: svc}
 }
 
+// SubscribeRequest is the JSON body for POST /api/subscribe.
+type SubscribeRequest struct {
+	Email string `json:"email" binding:"required,email"`
+	Repo  string `json:"repo" binding:"required"`
+}
+
 // Subscribe handles POST /api/subscribe
 func (h *Handler) Subscribe(c *gin.Context) {
-	var req model.SubscribeRequest
+	var req SubscribeRequest
 
 	// bind and validate JSON body
 	if err := c.ShouldBindJSON(&req); err != nil {

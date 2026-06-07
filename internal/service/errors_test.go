@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github-release-notifier/internal/model"
+	"github-release-notifier/internal/repospec"
 )
 
 // verifies that every predeclared domain error carries
@@ -62,12 +62,12 @@ func TestKindOf_OnPredeclaredErrors(t *testing.T) {
 // verifies that fmt.Errorf("%w", ...) chains are walked correctly
 // this is the path used when service translates a model error
 func TestKindOf_UnwrapsWrappedDomainError(t *testing.T) {
-	wrapped := fmt.Errorf("%w: %w", ErrInvalidRepoFormat, model.ErrInvalidRepoFormat)
+	wrapped := fmt.Errorf("%w: %w", ErrInvalidRepoFormat, repospec.ErrInvalidRepoFormat)
 
 	if got := KindOf(wrapped); got != KindInvalid {
 		t.Errorf("KindOf(wrapped) = %v, want KindInvalid", got)
 	}
-	if !errors.Is(wrapped, model.ErrInvalidRepoFormat) {
+	if !errors.Is(wrapped, repospec.ErrInvalidRepoFormat) {
 		t.Error("errors.Is must still match the wrapped model sentinel")
 	}
 	if !errors.Is(wrapped, ErrInvalidRepoFormat) {

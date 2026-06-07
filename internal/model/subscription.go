@@ -21,9 +21,3 @@ type Repository struct {
 	LastSeenTag   string     `db:"last_seen_tag" json:"last_seen_tag"`
 	LastCheckedAt *time.Time `db:"last_checked_at" json:"last_checked_at"`
 }
-
-// SubscribeRequest is the JSON body for POST /api/subscribe, defines what the client sends to the server
-type SubscribeRequest struct {
-	Email string `json:"email" binding:"required,email"`
-	Repo  string `json:"repo" binding:"required"`
-}

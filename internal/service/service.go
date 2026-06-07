@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github-release-notifier/internal/model"
+	"github-release-notifier/internal/repospec"
 	"regexp"
 
 	"github.com/google/uuid"
@@ -80,7 +81,7 @@ func (s *Service) Subscribe(ctx context.Context, email, repoStr string) error {
 	}
 
 	// 2. Validate repo format
-	spec, err := model.ParseRepoSpec(repoStr)
+	spec, err := repospec.ParseRepoSpec(repoStr)
 	if err != nil {
 		// Translate the model-layer parsing error into the service domain
 		// sentinel, preserving the original cause via %w for logs/debug
