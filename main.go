@@ -95,7 +95,9 @@ func run() error {
 		scannerGH = ghClient
 	}
 
-	emailNotifier := notification.NewSMTPSender(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUser, cfg.SMTPPass, cfg.SMTPFrom)
+	// Delivery moved to the notifier service; HTTPSender swaps in for SMTPSender
+	// behind the same interfaces, so callers (service, scanner) are untouched.
+	emailNotifier := notification.NewHTTPSender(cfg.NotifierURL)
 	svc := subscription.New(subStore, trackStore, ghService, emailNotifier, cfg.BaseURL)
 
 	// --- Start Background Scanner with context for graceful shutdown ---

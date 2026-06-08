@@ -26,13 +26,41 @@ services:
       retries: 5
 
   # Mailpit: fake SMTP server for local dev and E2E tests.
-  # Captures every email sent by the app; nothing leaves the host.
+  # Captures every email sent by the notifier; nothing leaves the host.
   # SMTP on 1025, web UI on http://localhost:8025 for inspection.
   mailpit:
     image: axllent/mailpit:latest
     ports:
       - "1025:1025"  # SMTP
       - "8025:8025"  # Web UI
+
+  # Notifier microservice: the only process that speaks SMTP. The monolith
+  # POSTs notification requests here over HTTP/JSON; this service relays them
+  # to Mailpit. Extracting it is the point of HW7 Phase 2.
+  notifier:
+    build:
+      context: .
+      dockerfile: Dockerfile.notifier
+    ports:
+      - "9090:9090"
+    environment:
+      NOTIFIER_PORT: "9090"
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_USER: ""
+      SMTP_PASS: ""
+      SMTP_FROM: noreply@github-notifier.local
+    depends_on:
+      mailpit:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:9090/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: on-failure
+    labels:
+      logging: "notifier"
 
   app:
     build: .
@@ -41,23 +69,18 @@ services:
     env_file:
       - .env
     environment:
-      # These override values from .env so the app inside Docker reaches
-      # services by container hostname (and uses Mailpit instead of
-      # Mailtrap for deterministic, rate-limit-free email).
+      # Override .env so the app inside Docker reaches services by container
+      # hostname, and delegates email to the notifier service (no SMTP here).
       DATABASE_URL: postgres://postgres:postgres@db:5432/notifier?sslmode=disable
       REDIS_URL: redis://redis:6379/0
-      SMTP_HOST: mailpit
-      SMTP_PORT: "1025"
-      SMTP_USER: ""
-      SMTP_PASS: ""
-      SMTP_FROM: noreply@github-notifier.local
+      NOTIFIER_URL: http://notifier:9090
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
-      mailpit:
-        condition: service_started
+      notifier:
+        condition: service_healthy
     restart: on-failure
     # Explicit opt-in for log collection. Filebeat ships only containers
     # carrying this label (see observability/filebeat/filebeat.yml). Using a
