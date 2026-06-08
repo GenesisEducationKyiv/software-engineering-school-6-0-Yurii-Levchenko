@@ -42,7 +42,9 @@ services:
       context: .
       dockerfile: Dockerfile.notifier
     ports:
-      - "9090:9090"
+      # Host 9091 -> container 9090: avoids clashing with Prometheus, which
+      # publishes host 9090 in the observability stack (both can run together).
+      - "9091:9090"
     environment:
       NOTIFIER_PORT: "9090"
       SMTP_HOST: mailpit
