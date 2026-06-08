@@ -33,7 +33,7 @@ func run() error {
 
 	// The notifier owns its own (small) config — it knows nothing about the
 	// monolith's database/redis. SMTP is now this service's private concern.
-	sender := notification.NewSMTPSender(
+	sender := NewSMTPSender(
 		getEnv("SMTP_HOST", "localhost"),
 		getEnv("SMTP_PORT", "1025"),
 		getEnv("SMTP_USER", ""),
@@ -82,7 +82,7 @@ func run() error {
 // The request payloads carry the recipient email, which is PII — handlers must
 // never log it (GDPR; same rule the monolith follows).
 
-func handleConfirmation(sender *notification.SMTPSender) http.HandlerFunc {
+func handleConfirmation(sender *SMTPSender) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -103,7 +103,7 @@ func handleConfirmation(sender *notification.SMTPSender) http.HandlerFunc {
 	}
 }
 
-func handleRelease(sender *notification.SMTPSender) http.HandlerFunc {
+func handleRelease(sender *SMTPSender) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
