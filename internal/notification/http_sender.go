@@ -2,6 +2,7 @@ package notification
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -51,7 +52,14 @@ func (s *HTTPSender) post(path string, payload any) error {
 		return fmt.Errorf("marshal notification request: %w", err)
 	}
 
-	resp, err := s.client.Post(s.baseURL+path, "application/json", bytes.NewReader(body))
+	// Interfaces carry no ctx yet; Background is bounded by the client Timeout.
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, s.baseURL+path, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build notifier request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("call notifier service: %w", err)
 	}
