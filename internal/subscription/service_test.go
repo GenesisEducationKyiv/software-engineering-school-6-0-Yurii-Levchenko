@@ -74,8 +74,10 @@ func (m *mockRepo) GetActiveSubscriptionsByEmail(email string) ([]Subscription, 
 	return result, nil
 }
 
-func (m *mockRepo) UpsertRepoTracking(repo, lastSeenTag string) error {
-	m.repoTracking[repo] = lastSeenTag
+func (m *mockRepo) RegisterRepo(repo string) error {
+	if _, ok := m.repoTracking[repo]; !ok {
+		m.repoTracking[repo] = ""
+	}
 	return nil
 }
 
