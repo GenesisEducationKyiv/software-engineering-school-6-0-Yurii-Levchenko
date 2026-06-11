@@ -27,9 +27,9 @@ type SubscriptionStore interface {
 // RepoTracker is the minimum interface service needs from the tracking
 // store: it only registers a repo for scanning after confirmation
 // Scanner has its own broader interface (ReleaseTrackingStore) because
-// it also reads tracking state; service never reads, only writes
+// it also reads tracking state; service never reads, only registers
 type RepoTracker interface {
-	UpsertRepoTracking(repo, lastSeenTag string) error
+	RegisterRepo(repo string) error
 }
 
 // GitHubClient defines the interface for GitHub API operations
@@ -141,17 +141,16 @@ func (s *Service) Confirm(token string) error {
 		return ErrTokenNotFound
 	}
 
-	// Idempotent: if already confirmed, just return success
-	if sub.Confirmed {
-		return nil
+	// Idempotent: re-confirming is not an error
+	if !sub.Confirmed {
+		if err := s.subs.ConfirmSubscription(token); err != nil {
+			return fmt.Errorf("failed to confirm subscription: %w", err)
+		}
 	}
 
-	if err := s.subs.ConfirmSubscription(token); err != nil {
-		return fmt.Errorf("failed to confirm subscription: %w", err)
-	}
-
-	// Ensure repo is being tracked
-	if err := s.tracker.UpsertRepoTracking(sub.Repo, ""); err != nil {
+	// Ensure repo is being tracked. Runs on repeat confirms too (RegisterRepo
+	// is idempotent), so retrying the link heals a failed registration.
+	if err := s.tracker.RegisterRepo(sub.Repo); err != nil {
 		return fmt.Errorf("failed to track repository: %w", err)
 	}
 
