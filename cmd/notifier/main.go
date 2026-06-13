@@ -60,7 +60,13 @@ func run() error {
 	// Consume notification commands from RabbitMQ and send the emails. A fatal
 	// consumer error surfaces here so run() returns it -> the container exits
 	// and restarts (restart: on-failure) instead of silently not consuming.
-	consumer := NewConsumer(sender)
+	dedup, err := newRedisDeduper(getEnv("REDIS_URL", "redis://localhost:6379/0"), 24*time.Hour)
+	if err != nil {
+		return fmt.Errorf("connect to redis: %w", err)
+	}
+	defer dedup.Close()
+
+	consumer := NewConsumer(sender, dedup)
 	consumerErr := make(chan error, 1)
 	go func() {
 		if err := consumer.Run(ctx, getEnv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")); err != nil {

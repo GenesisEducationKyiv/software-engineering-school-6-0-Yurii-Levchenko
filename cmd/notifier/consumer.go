@@ -27,10 +27,11 @@ type emailSender interface {
 // Consumer reads notification commands from RabbitMQ and sends the emails.
 type Consumer struct {
 	sender emailSender
+	dedup  deduper
 }
 
-func NewConsumer(sender emailSender) *Consumer {
-	return &Consumer{sender: sender}
+func NewConsumer(sender emailSender, dedup deduper) *Consumer {
+	return &Consumer{sender: sender, dedup: dedup}
 }
 
 // Run connects to RabbitMQ, declares the topology (exchange, work queue with a
@@ -69,7 +70,7 @@ func (c *Consumer) Run(ctx context.Context, url string) error {
 			if !ok {
 				return fmt.Errorf("deliveries channel closed")
 			}
-			if err := c.handle(d); err != nil {
+			if err := c.handle(ctx, d); err != nil {
 				slog.Error("Notifier failed to process message, dead-lettering",
 					"routing_key", d.RoutingKey, "message_id", d.MessageId, "err", err)
 				_ = d.Nack(false, false) // requeue=false -> routed to the DLQ
@@ -108,9 +109,36 @@ func (c *Consumer) declareTopology(ch *amqp.Channel) error {
 	return ch.Qos(10, 0, false) // at most 10 unacked messages in flight
 }
 
-// handle decodes one delivery by its routing key and sends the email. A
-// returned error tells Run to dead-letter the message; nil means ack.
-func (c *Consumer) handle(d amqp.Delivery) error {
+// handle runs the idempotent-consumer flow: skip if already processed, send the
+// email, then mark it processed. A returned error tells Run to dead-letter the
+// message; nil means ack.
+func (c *Consumer) handle(ctx context.Context, d amqp.Delivery) error {
+	if d.MessageId != "" {
+		seen, err := c.dedup.AlreadyProcessed(ctx, d.MessageId)
+		if err != nil {
+			// Fail open: a Redis blip shouldn't block delivery; a rare duplicate
+			// beats a lost notification.
+			slog.Warn("Notifier dedup check failed, processing anyway", "message_id", d.MessageId, "err", err)
+		} else if seen {
+			slog.Info("Notifier skipping duplicate", "message_id", d.MessageId)
+			return nil
+		}
+	}
+
+	if err := c.dispatch(d); err != nil {
+		return err
+	}
+
+	if d.MessageId != "" {
+		if err := c.dedup.MarkProcessed(ctx, d.MessageId); err != nil {
+			slog.Warn("Notifier failed to mark processed", "message_id", d.MessageId, "err", err)
+		}
+	}
+	return nil
+}
+
+// dispatch decodes one delivery by its routing key and sends the email.
+func (c *Consumer) dispatch(d amqp.Delivery) error {
 	switch d.RoutingKey {
 	case notification.RoutingConfirm:
 		var req notification.ConfirmationRequest
