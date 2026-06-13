@@ -11,6 +11,7 @@ require (
 	github.com/lib/pq v1.12.3
 	github.com/mxschmitt/playwright-go v0.6100.0
 	github.com/prometheus/client_golang v1.23.2
+	github.com/rabbitmq/amqp091-go v1.11.0
 	github.com/redis/go-redis/v9 v9.18.0
 	github.com/testcontainers/testcontainers-go v0.42.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.42.0
