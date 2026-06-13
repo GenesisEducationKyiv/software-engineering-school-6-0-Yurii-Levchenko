@@ -51,9 +51,9 @@ services:
       - "1025:1025"  # SMTP
       - "8025:8025"  # Web UI
 
-  # Notifier microservice: the only process that speaks SMTP. The monolith
-  # POSTs notification requests here over HTTP/JSON; this service relays them
-  # to Mailpit. Extracting it is the point of HW7 Phase 2.
+  # Notifier microservice: consumes notification commands from RabbitMQ and
+  # sends the emails via SMTP. The only process that speaks SMTP. The HTTP
+  # server now serves /health only (for this healthcheck).
   notifier:
     build:
       context: .
@@ -64,12 +64,15 @@ services:
       - "9091:9090"
     environment:
       NOTIFIER_PORT: "9090"
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
       SMTP_HOST: mailpit
       SMTP_PORT: "1025"
       SMTP_USER: ""
       SMTP_PASS: ""
       SMTP_FROM: noreply@github-notifier.local
     depends_on:
+      rabbitmq:
+        condition: service_healthy
       mailpit:
         condition: service_started
     healthcheck:
@@ -89,16 +92,16 @@ services:
       - .env
     environment:
       # Override .env so the app inside Docker reaches services by container
-      # hostname, and delegates email to the notifier service (no SMTP here).
+      # hostname, and publishes notifications to RabbitMQ (the notifier consumes).
       DATABASE_URL: postgres://postgres:postgres@db:5432/notifier?sslmode=disable
       REDIS_URL: redis://redis:6379/0
-      NOTIFIER_URL: http://notifier:9090
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
-      notifier:
+      rabbitmq:
         condition: service_healthy
     restart: on-failure
     # Explicit opt-in for log collection. Filebeat ships only containers
