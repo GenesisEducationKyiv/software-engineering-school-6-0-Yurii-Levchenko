@@ -79,6 +79,15 @@ func (p *BrokerPublisher) publish(routingKey, messageID string, payload any) err
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	return p.Publish(ctx, routingKey, messageID, body)
+}
+
+// Publish sends an already-serialized JSON message to the notifications exchange
+// under routingKey, tagging it with messageID for the consumer's idempotency
+// check. It is used by the transactional-outbox relay, which already holds the
+// marshaled payload and the deterministic message id. The mutex guards the shared
+// amqp channel, which is not safe for concurrent publishers.
+func (p *BrokerPublisher) Publish(ctx context.Context, routingKey, messageID string, body []byte) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.ch.PublishWithContext(ctx, ExchangeName, routingKey, false, false, amqp.Publishing{

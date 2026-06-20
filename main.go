@@ -17,6 +17,7 @@ import (
 	"github-release-notifier/internal/githubgateway"
 	"github-release-notifier/internal/logging"
 	"github-release-notifier/internal/notification"
+	"github-release-notifier/internal/outbox"
 	"github-release-notifier/internal/releasetracking"
 	"github-release-notifier/internal/subscription"
 
@@ -110,6 +111,17 @@ func run() error {
 
 	releaseScanner := releasetracking.New(svc, trackStore, scannerGH, emailNotifier, cfg.ScanIntervalSecs, cfg.BaseURL)
 	go releaseScanner.Start(ctx)
+
+	// --- Start the transactional-outbox relay ---
+	// Publishes notification commands written to the outbox table to RabbitMQ.
+	// Idle until the orchestrator (HW9) starts writing rows; shares ctx with the
+	// scanner so it stops on graceful shutdown.
+	outboxRelay := outbox.NewRelay(
+		outbox.NewStore(db),
+		emailNotifier,
+		time.Duration(cfg.OutboxPollIntervalMs)*time.Millisecond,
+	)
+	go outboxRelay.Run(ctx)
 
 	// --- Setup Router ---
 	// Router wiring lives in internal/app so that integration tests can
