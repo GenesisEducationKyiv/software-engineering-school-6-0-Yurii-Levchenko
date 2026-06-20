@@ -23,6 +23,8 @@ ADR-и не редагуються після прийняття. Якщо рі�
 | 004 | [Сканер релізів — внутрішня goroutine](004-goroutine-scanner.md)                                | Прийнято |
 | 005 | [Кешування GitHub API через Redis із TTL 10 хвилин](005-redis-caching-for-github-api.md)        | Прийнято |
 | 006 | [Прокидання context.Context через всю call chain](006-context-propagation-through-call-chain.md)| Прийнято |
+| 009 | [Вибір брокера повідомлень — RabbitMQ](009-message-broker-rabbitmq.md)                          | Прийнято |
+| 010 | [Розподілена транзакція підписки через оркестровану Saga](010-orchestrated-saga-for-subscribe.md)| Прийнято |
 
 ## Як додавати нові ADR
 
