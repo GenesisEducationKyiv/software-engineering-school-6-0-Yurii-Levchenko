@@ -10,7 +10,7 @@ import "time"
 type State string
 
 const (
-	// StateSubscriptionCreated: T1 committed (subscription + saga + outbox command). 
+	// StateSubscriptionCreated: T1 committed (subscription + saga + outbox command).
 	// Waiting for the notifier to report the email was sent.
 	StateSubscriptionCreated State = "subscription_created"
 	// StateCompleted: the confirmation email was sent (terminal, success).
