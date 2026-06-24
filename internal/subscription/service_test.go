@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -112,26 +113,40 @@ func (m *mockGitHub) CheckRepoExists(_ context.Context, owner, repo string) (boo
 	return m.existingRepos[key], nil
 }
 
-type mockNotifier struct {
-	emailsSent []string
+// sagaCall records one StartConfirmation invocation for assertions.
+type sagaCall struct {
+	Email      string
+	Repo       string
+	Token      string
+	ConfirmURL string
 }
 
-func (m *mockNotifier) SendConfirmationEmail(to, confirmURL string) error {
-	m.emailsSent = append(m.emailsSent, to)
+// fakeSaga implements sagaStarter. It records calls (and can be made to fail) so
+// unit tests can verify Subscribe hands off correctly without a real DB/broker.
+type fakeSaga struct {
+	calls []sagaCall
+	err   error
+}
+
+func (f *fakeSaga) StartConfirmation(_ context.Context, email, repo, token, confirmURL string) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.calls = append(f.calls, sagaCall{Email: email, Repo: repo, Token: token, ConfirmURL: confirmURL})
 	return nil
 }
 
 // --- Helper to create a Service with mocks ---
 
-func setupTestService() (*Service, *mockRepo, *mockGitHub, *mockNotifier) {
+func setupTestService() (*Service, *mockRepo, *mockGitHub, *fakeSaga) {
 	repo := newMockRepo()
 	gh := &mockGitHub{existingRepos: map[string]bool{
 		"golang/go":      true,
 		"facebook/react": true,
 	}}
-	notif := &mockNotifier{}
-	svc := New(repo, repo, gh, notif, "http://localhost:8080")
-	return svc, repo, gh, notif
+	saga := &fakeSaga{}
+	svc := New(repo, repo, gh, saga, "http://localhost:8080")
+	return svc, repo, gh, saga
 }
 
 // --- Tests ---
@@ -162,28 +177,26 @@ func TestValidateEmail(t *testing.T) {
 }
 
 func TestSubscribe_Success(t *testing.T) {
-	svc, repo, _, notif := setupTestService()
+	svc, _, _, saga := setupTestService()
 
 	err := svc.Subscribe(context.Background(), "user@example.com", "golang/go")
 	if err != nil {
 		t.Fatalf("Subscribe failed: %v", err)
 	}
 
-	// Check subscription was created
-	sub, _ := repo.GetSubscriptionByEmailAndRepo("user@example.com", "golang/go")
-	if sub == nil {
-		t.Fatal("Subscription not found in repository")
+	// Subscribe should have started exactly one saga with the right arguments.
+	if len(saga.calls) != 1 {
+		t.Fatalf("saga starts: got %d, want 1", len(saga.calls))
 	}
-	if sub.Confirmed {
-		t.Error("New subscription should not be confirmed")
+	c := saga.calls[0]
+	if c.Email != "user@example.com" || c.Repo != "golang/go" {
+		t.Errorf("saga call = %+v, want email/repo user@example.com / golang/go", c)
 	}
-	if sub.Token == "" {
-		t.Error("Subscription should have a token")
+	if c.Token == "" {
+		t.Error("saga call should carry a generated token")
 	}
-
-	// check whether confirmation email was sent
-	if len(notif.emailsSent) != 1 || notif.emailsSent[0] != "user@example.com" {
-		t.Errorf("Expected confirmation email to user@example.com, got %v", notif.emailsSent)
+	if !strings.Contains(c.ConfirmURL, "/api/confirm/") {
+		t.Errorf("confirmURL missing /api/confirm/: %q", c.ConfirmURL)
 	}
 }
 
@@ -215,16 +228,15 @@ func TestSubscribe_RepoNotFound(t *testing.T) {
 }
 
 func TestSubscribe_AlreadySubscribed(t *testing.T) {
-	svc, _, _, _ := setupTestService()
+	svc, repo, _, _ := setupTestService()
 
-	// first subscription
+	// Seed an existing subscription directly (creation now lives in the saga,
+	// so we set up the duplicate state in the store rather than via Subscribe).
+	_ = repo.CreateSubscription(&Subscription{
+		Email: "user@example.com", Repo: "golang/go", Token: "seed-token",
+	})
+
 	err := svc.Subscribe(context.Background(), "user@example.com", "golang/go")
-	if err != nil {
-		t.Fatalf("First subscribe failed: %v", err)
-	}
-
-	// duplicate subscription
-	err = svc.Subscribe(context.Background(), "user@example.com", "golang/go")
 	if !errors.Is(err, ErrAlreadySubscribed) {
 		t.Errorf("Expected ErrAlreadySubscribed, got %v", err)
 	}
@@ -233,18 +245,15 @@ func TestSubscribe_AlreadySubscribed(t *testing.T) {
 func TestConfirm_Success(t *testing.T) {
 	svc, repo, _, _ := setupTestService()
 
-	// create a subscription first
-	_ = svc.Subscribe(context.Background(), "user@example.com", "golang/go")
-	sub, _ := repo.GetSubscriptionByEmailAndRepo("user@example.com", "golang/go")
+	_ = repo.CreateSubscription(&Subscription{
+		Email: "user@example.com", Repo: "golang/go", Token: "tok-confirm",
+	})
 
-	// confirm it
-	err := svc.Confirm(sub.Token)
-	if err != nil {
+	if err := svc.Confirm("tok-confirm"); err != nil {
 		t.Fatalf("Confirm failed: %v", err)
 	}
 
-	// verify it's confirmed
-	updated, _ := repo.GetSubscriptionByToken(sub.Token)
+	updated, _ := repo.GetSubscriptionByToken("tok-confirm")
 	if !updated.Confirmed {
 		t.Error("Subscription should be confirmed")
 	}
@@ -262,12 +271,13 @@ func TestConfirm_TokenNotFound(t *testing.T) {
 func TestConfirm_Idempotent(t *testing.T) {
 	svc, repo, _, _ := setupTestService()
 
-	_ = svc.Subscribe(context.Background(), "user@example.com", "golang/go")
-	sub, _ := repo.GetSubscriptionByEmailAndRepo("user@example.com", "golang/go")
+	_ = repo.CreateSubscription(&Subscription{
+		Email: "user@example.com", Repo: "golang/go", Token: "tok-idem",
+	})
 
 	// confirm twice. should not error
-	_ = svc.Confirm(sub.Token)
-	err := svc.Confirm(sub.Token)
+	_ = svc.Confirm("tok-idem")
+	err := svc.Confirm("tok-idem")
 	if err != nil {
 		t.Errorf("Second confirm should succeed (idempotent), got %v", err)
 	}
@@ -276,16 +286,16 @@ func TestConfirm_Idempotent(t *testing.T) {
 func TestUnsubscribe_Success(t *testing.T) {
 	svc, repo, _, _ := setupTestService()
 
-	_ = svc.Subscribe(context.Background(), "user@example.com", "golang/go")
-	sub, _ := repo.GetSubscriptionByEmailAndRepo("user@example.com", "golang/go")
+	_ = repo.CreateSubscription(&Subscription{
+		Email: "user@example.com", Repo: "golang/go", Token: "tok-unsub",
+	})
 
-	err := svc.Unsubscribe(sub.Token)
+	err := svc.Unsubscribe("tok-unsub")
 	if err != nil {
 		t.Fatalf("Unsubscribe failed: %v", err)
 	}
 
-	// verify it's deleted
-	deleted, _ := repo.GetSubscriptionByToken(sub.Token)
+	deleted, _ := repo.GetSubscriptionByToken("tok-unsub")
 	if deleted != nil {
 		t.Error("Subscription should be deleted")
 	}
@@ -303,15 +313,15 @@ func TestUnsubscribe_TokenNotFound(t *testing.T) {
 func TestGetSubscriptions_ReturnsOnlyConfirmed(t *testing.T) {
 	svc, repo, _, _ := setupTestService()
 
-	// create two subscriptions
-	_ = svc.Subscribe(context.Background(), "user@example.com", "golang/go")
-	_ = svc.Subscribe(context.Background(), "user@example.com", "facebook/react")
+	// two subscriptions, only one confirmed
+	_ = repo.CreateSubscription(&Subscription{
+		Email: "user@example.com", Repo: "golang/go", Token: "t1",
+	})
+	_ = repo.CreateSubscription(&Subscription{
+		Email: "user@example.com", Repo: "facebook/react", Token: "t2",
+	})
+	_ = svc.Confirm("t1") // confirm only golang/go
 
-	// confirm only one
-	sub1, _ := repo.GetSubscriptionByEmailAndRepo("user@example.com", "golang/go")
-	_ = svc.Confirm(sub1.Token)
-
-	// get subscriptions. should only return the confirmed one
 	subs, err := svc.GetSubscriptions("user@example.com")
 	if err != nil {
 		t.Fatalf("GetSubscriptions failed: %v", err)

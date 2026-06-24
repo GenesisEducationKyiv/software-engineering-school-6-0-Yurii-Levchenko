@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"strings"
 	"testing"
 )
 
@@ -68,17 +67,25 @@ func TestSubscribe_HappyPath(t *testing.T) {
 		t.Errorf("subscription rows: got %d, want 1", count)
 	}
 
-	// Verify confirmation email was queued
-	if len(ta.notifier.sent) != 1 {
-		t.Fatalf("notifier calls: got %d, want 1", len(ta.notifier.sent))
+	// Verify the saga was started and the confirmation command enqueued to the
+	// outbox (the relay publishes it — no direct notifier call anymore).
+	var sagaCount int
+	if err := ta.db.Get(&sagaCount,
+		`SELECT COUNT(*) FROM saga WHERE email=$1 AND repo=$2 AND state='subscription_created'`,
+		"alice@example.com", "golang/go"); err != nil {
+		t.Fatalf("db query saga: %v", err)
 	}
-	if ta.notifier.sent[0].To != "alice@example.com" {
-		t.Errorf("notifier recipient: got %q, want alice@example.com",
-			ta.notifier.sent[0].To)
+	if sagaCount != 1 {
+		t.Errorf("saga rows: got %d, want 1", sagaCount)
 	}
-	if !strings.Contains(ta.notifier.sent[0].ConfirmURL, "/api/confirm/") {
-		t.Errorf("notifier confirmURL missing /api/confirm/: %q",
-			ta.notifier.sent[0].ConfirmURL)
+
+	var outboxCount int
+	if err := ta.db.Get(&outboxCount,
+		`SELECT COUNT(*) FROM outbox WHERE routing_key='confirmation'`); err != nil {
+		t.Fatalf("db query outbox: %v", err)
+	}
+	if outboxCount != 1 {
+		t.Errorf("outbox confirmation rows: got %d, want 1", outboxCount)
 	}
 }
 
@@ -156,10 +163,13 @@ func TestSubscribe_Duplicate_409(t *testing.T) {
 		t.Fatalf("duplicate subscribe: got %d, want 409; body=%v", status, body)
 	}
 
-	// Only the first call should have triggered an email.
-	if len(ta.notifier.sent) != 1 {
-		t.Errorf("notifier calls after duplicate: got %d, want 1",
-			len(ta.notifier.sent))
+	// Only the first call should have created a saga + outbox command.
+	var sagaCount int
+	if err := ta.db.Get(&sagaCount, `SELECT COUNT(*) FROM saga`); err != nil {
+		t.Fatalf("db query saga: %v", err)
+	}
+	if sagaCount != 1 {
+		t.Errorf("saga rows after duplicate: got %d, want 1", sagaCount)
 	}
 }
 

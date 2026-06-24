@@ -26,6 +26,8 @@ import (
 	"time"
 
 	"github-release-notifier/internal/app"
+	"github-release-notifier/internal/orchestrator"
+	"github-release-notifier/internal/outbox"
 	"github-release-notifier/internal/releasetracking"
 	"github-release-notifier/internal/subscription"
 
@@ -123,10 +125,9 @@ func runMigrations(db *sqlx.DB) error {
 // the service layer, plus a handle to the shared DB so tests can assert
 // persisted state directly.
 type testApp struct {
-	server   *httptest.Server
-	github   *fakeGitHubClient
-	notifier *fakeNotifier
-	db       *sqlx.DB
+	server *httptest.Server
+	github *fakeGitHubClient
+	db     *sqlx.DB
 }
 
 // newTestApp truncates the DB to a clean slate, builds a fresh service
@@ -147,17 +148,19 @@ func newTestAppWithKey(t *testing.T, apiKey string) *testApp {
 	t.Helper()
 
 	if _, err := testDB.Exec(
-		`TRUNCATE TABLE subscriptions, repositories RESTART IDENTITY`,
+		`TRUNCATE TABLE subscriptions, repositories, saga, outbox RESTART IDENTITY`,
 	); err != nil {
 		t.Fatalf("truncate tables: %v", err)
 	}
 
 	gh := &fakeGitHubClient{repos: map[string]bool{}}
-	notif := &fakeNotifier{}
 
-	trackStore := releasetracking.NewStore(testDB)
 	subStore := subscription.NewStore(testDB)
-	svc := subscription.New(subStore, trackStore, gh, notif, "http://test.local")
+	trackStore := releasetracking.NewStore(testDB)
+	sagaStore := orchestrator.NewStore(testDB)
+	outboxStore := outbox.NewStore(testDB)
+	orch := orchestrator.New(testDB, subStore, sagaStore, outboxStore)
+	svc := subscription.New(subStore, trackStore, gh, orch, "http://test.local")
 
 	// staticIndexPath="" skips the "/" route (the file is not at a predictable
 	// relative path from the test package).
@@ -169,10 +172,9 @@ func newTestAppWithKey(t *testing.T, apiKey string) *testApp {
 	})
 
 	return &testApp{
-		server:   server,
-		github:   gh,
-		notifier: notif,
-		db:       testDB,
+		server: server,
+		github: gh,
+		db:     testDB,
 	}
 }
 
@@ -190,25 +192,4 @@ func (f *fakeGitHubClient) CheckRepoExists(ctx context.Context, owner, repo stri
 		return false, f.err
 	}
 	return f.repos[owner+"/"+repo], nil
-}
-
-// sentEmail records a single notifier call for later assertion.
-type sentEmail struct {
-	To         string
-	ConfirmURL string
-}
-
-// fakeNotifier implements service.EmailNotifier.
-// It records every call so tests can verify what would have been sent.
-type fakeNotifier struct {
-	sent []sentEmail
-	err  error // if set, every call returns this error
-}
-
-func (f *fakeNotifier) SendConfirmationEmail(to, confirmURL string) error {
-	if f.err != nil {
-		return f.err
-	}
-	f.sent = append(f.sent, sentEmail{To: to, ConfirmURL: confirmURL})
-	return nil
 }

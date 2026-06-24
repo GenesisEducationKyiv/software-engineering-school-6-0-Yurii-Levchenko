@@ -25,33 +25,6 @@ func (f *fakePublishCh) PublishWithContext(_ context.Context, _, key string, _, 
 	return nil
 }
 
-func TestBrokerPublisher_SendConfirmation_PublishesRoutedMessage(t *testing.T) {
-	f := &fakePublishCh{}
-	p := &BrokerPublisher{ch: f}
-
-	if err := p.SendConfirmationEmail("a@b.com", "http://x/api/confirm/tok-7"); err != nil {
-		t.Fatalf("SendConfirmationEmail: %v", err)
-	}
-
-	if len(f.keys) != 1 || f.keys[0] != RoutingConfirm {
-		t.Fatalf("routing key = %v, want %q", f.keys, RoutingConfirm)
-	}
-	msg := f.msgs[0]
-	if msg.MessageId != "confirm:tok-7" {
-		t.Errorf("MessageId = %q, want confirm:tok-7", msg.MessageId)
-	}
-	if msg.DeliveryMode != amqp.Persistent {
-		t.Errorf("DeliveryMode = %d, want persistent(%d)", msg.DeliveryMode, amqp.Persistent)
-	}
-	var req ConfirmationRequest
-	if err := json.Unmarshal(msg.Body, &req); err != nil {
-		t.Fatalf("body not JSON: %v", err)
-	}
-	if req.To != "a@b.com" || req.ConfirmURL != "http://x/api/confirm/tok-7" {
-		t.Errorf("decoded body = %+v", req)
-	}
-}
-
 func TestBrokerPublisher_SendRelease_PublishesRoutedMessage(t *testing.T) {
 	f := &fakePublishCh{}
 	p := &BrokerPublisher{ch: f}
