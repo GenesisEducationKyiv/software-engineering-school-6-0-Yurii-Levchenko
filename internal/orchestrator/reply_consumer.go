@@ -14,16 +14,24 @@ import (
 
 const replyQueueName = "saga.replies"
 
-// ReplyConsumer consumes saga replies from the notifier and advances the saga
-// state (e.g. subscription_created -> completed when the confirmation email was
-// sent). It is the orchestrator's half of the async command/reply exchange.
-type ReplyConsumer struct {
-	sagas *Store
+// subscriptionCompensator runs compensation C1: mark the subscription failed
+// (no delete). *subscription.Store satisfies it.
+type subscriptionCompensator interface {
+	MarkFailed(ctx context.Context, id int) error
 }
 
-// NewReplyConsumer creates a reply consumer backed by the saga store.
-func NewReplyConsumer(sagas *Store) *ReplyConsumer {
-	return &ReplyConsumer{sagas: sagas}
+// ReplyConsumer consumes saga replies from the notifier and advances the saga
+// state: subscription_created -> completed on "sent", or -> failed (compensating)
+// on "failed". It is the orchestrator's half of the async command/reply exchange.
+type ReplyConsumer struct {
+	sagas *Store
+	subs  subscriptionCompensator
+}
+
+// NewReplyConsumer creates a reply consumer backed by the saga store and the
+// subscription compensator.
+func NewReplyConsumer(sagas *Store, subs subscriptionCompensator) *ReplyConsumer {
+	return &ReplyConsumer{sagas: sagas, subs: subs}
 }
 
 // Run connects to RabbitMQ, declares the reply queue bound to the notifications
@@ -125,13 +133,31 @@ func (rc *ReplyConsumer) HandleReply(ctx context.Context, body []byte) error {
 		return nil
 	}
 
-	// Only the email-sent reply advances the saga for now; failure/compensation
-	// is handled in a later PR. The state guard makes re-delivery a no-op.
-	if rep.Status == notification.SagaStatusSent && sg.State == StateSubscriptionCreated {
-		if err := rc.sagas.UpdateState(ctx, rep.SagaID, StateCompleted, ""); err != nil {
-			return fmt.Errorf("complete saga %s: %w", rep.SagaID, err)
+	// The state guards make a re-delivered reply a no-op (idempotent).
+	switch rep.Status {
+	case notification.SagaStatusSent:
+		if sg.State == StateSubscriptionCreated {
+			if err := rc.sagas.UpdateState(ctx, sg.ID, StateCompleted, ""); err != nil {
+				return fmt.Errorf("complete saga %s: %w", sg.ID, err)
+			}
+			slog.Info("Saga completed", "saga_id", sg.ID)
 		}
-		slog.Info("Saga completed", "saga_id", rep.SagaID)
+	case notification.SagaStatusFailed:
+		// Compensate (C1): mark the subscription failed. compensating is an
+		// intermediate state so a crash mid-compensation is resumable later.
+		if sg.State == StateSubscriptionCreated || sg.State == StateCompensating {
+			const reason = "confirmation email failed"
+			if err := rc.sagas.UpdateState(ctx, sg.ID, StateCompensating, reason); err != nil {
+				return fmt.Errorf("mark saga %s compensating: %w", sg.ID, err)
+			}
+			if err := rc.subs.MarkFailed(ctx, sg.SubscriptionID); err != nil {
+				return fmt.Errorf("compensate saga %s: %w", sg.ID, err)
+			}
+			if err := rc.sagas.UpdateState(ctx, sg.ID, StateFailed, reason); err != nil {
+				return fmt.Errorf("fail saga %s: %w", sg.ID, err)
+			}
+			slog.Info("Saga compensated (failed)", "saga_id", sg.ID)
+		}
 	}
 	return nil
 }

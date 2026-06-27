@@ -11,22 +11,35 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-// fakeSender records what the consumer asked to send, so we can test the
-// message-handling logic without a real SMTP server.
+// fakeSender records sends. failFirst makes the first N calls fail (transient);
+// err (once failFirst is exhausted) makes every call fail (permanent).
 type fakeSender struct {
-	confirm []notification.ConfirmationRequest
-	release []notification.ReleaseRequest
-	err     error
+	confirm      []notification.ConfirmationRequest
+	release      []notification.ReleaseRequest
+	err          error
+	failFirst    int
+	confirmCalls int
 }
 
 func (f *fakeSender) SendConfirmationEmail(to, confirmURL string) error {
+	f.confirmCalls++
+	if f.failFirst > 0 {
+		f.failFirst--
+		return errors.New("transient smtp")
+	}
+	if f.err != nil {
+		return f.err
+	}
 	f.confirm = append(f.confirm, notification.ConfirmationRequest{To: to, ConfirmURL: confirmURL})
-	return f.err
+	return nil
 }
 
 func (f *fakeSender) SendReleaseNotification(to, repo, tag, unsubscribeURL string) error {
+	if f.err != nil {
+		return f.err
+	}
 	f.release = append(f.release, notification.ReleaseRequest{To: to, Repo: repo, Tag: tag, UnsubscribeURL: unsubscribeURL})
-	return f.err
+	return nil
 }
 
 // fakeDedup: `seen` controls whether AlreadyProcessed reports a duplicate;
@@ -42,23 +55,30 @@ func (f *fakeDedup) MarkProcessed(_ context.Context, id string) error {
 	return nil
 }
 
-// fakeReplier records the saga ids the consumer replied for.
+// fakeReplier records (sagaID, status) of each reply.
+type repliedItem struct{ sagaID, status string }
 type fakeReplier struct {
-	replied []string
+	replied []repliedItem
 	err     error
 }
 
-func (f *fakeReplier) ReplyConfirmation(_ context.Context, sagaID string) error {
+func (f *fakeReplier) ReplyConfirmation(_ context.Context, sagaID, status string) error {
 	if f.err != nil {
 		return f.err
 	}
-	f.replied = append(f.replied, sagaID)
+	f.replied = append(f.replied, repliedItem{sagaID, status})
 	return nil
 }
 
 func delivery(key string, payload any) amqp.Delivery {
 	body, _ := json.Marshal(payload)
 	return amqp.Delivery{RoutingKey: key, Body: body}
+}
+
+// fastRetry disables the backoff sleep so failure tests don't wait.
+func fastRetry(c *Consumer, attempts int) {
+	c.maxAttempts = attempts
+	c.backoff = 0
 }
 
 func TestHandle_Confirmation_Sends(t *testing.T) {
@@ -76,7 +96,7 @@ func TestHandle_Confirmation_Sends(t *testing.T) {
 	}
 }
 
-func TestHandle_Confirmation_WithSagaID_Replies(t *testing.T) {
+func TestHandle_Confirmation_WithSagaID_RepliesSent(t *testing.T) {
 	f := &fakeSender{}
 	rep := &fakeReplier{}
 	c := NewConsumer(f, &fakeDedup{})
@@ -87,11 +107,8 @@ func TestHandle_Confirmation_WithSagaID_Replies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handle returned error: %v", err)
 	}
-	if len(f.confirm) != 1 {
-		t.Fatalf("confirm sends = %d, want 1", len(f.confirm))
-	}
-	if len(rep.replied) != 1 || rep.replied[0] != "saga-1" {
-		t.Errorf("replied = %v, want [saga-1]", rep.replied)
+	if len(rep.replied) != 1 || rep.replied[0] != (repliedItem{"saga-1", notification.SagaStatusSent}) {
+		t.Errorf("replied = %+v, want one {saga-1, sent}", rep.replied)
 	}
 }
 
@@ -107,6 +124,47 @@ func TestHandle_Confirmation_NoSagaID_DoesNotReply(t *testing.T) {
 	}
 	if len(rep.replied) != 0 {
 		t.Errorf("replied = %v, want none (no saga id in the command)", rep.replied)
+	}
+}
+
+func TestHandle_Retry_SucceedsAfterTransient(t *testing.T) {
+	f := &fakeSender{failFirst: 1} // first attempt fails, second succeeds
+	rep := &fakeReplier{}
+	c := NewConsumer(f, &fakeDedup{})
+	fastRetry(c, 2)
+
+	err := c.handle(context.Background(), rep, delivery(notification.RoutingConfirm,
+		notification.ConfirmationRequest{SagaID: "saga-2", To: "a@b.com", ConfirmURL: "http://x/c/t"}))
+
+	if err != nil {
+		t.Fatalf("handle returned error: %v", err)
+	}
+	if f.confirmCalls != 2 {
+		t.Errorf("send attempts = %d, want 2 (one retry)", f.confirmCalls)
+	}
+	if len(rep.replied) != 1 || rep.replied[0].status != notification.SagaStatusSent {
+		t.Errorf("replied = %+v, want one with status sent", rep.replied)
+	}
+}
+
+func TestHandle_Confirmation_SendFails_WithSagaID_RepliesFailed(t *testing.T) {
+	f := &fakeSender{err: errors.New("smtp down")}
+	rep := &fakeReplier{}
+	c := NewConsumer(f, &fakeDedup{})
+	fastRetry(c, 2)
+
+	err := c.handle(context.Background(), rep, delivery(notification.RoutingConfirm,
+		notification.ConfirmationRequest{SagaID: "saga-x", To: "a@b.com", ConfirmURL: "http://x/c/t"}))
+
+	// Saga command: we reported failure, so handle acks (returns nil).
+	if err != nil {
+		t.Fatalf("handle should ack a reported failure, got error: %v", err)
+	}
+	if f.confirmCalls != 2 {
+		t.Errorf("send attempts = %d, want 2 (retried then gave up)", f.confirmCalls)
+	}
+	if len(rep.replied) != 1 || rep.replied[0] != (repliedItem{"saga-x", notification.SagaStatusFailed}) {
+		t.Errorf("replied = %+v, want one {saga-x, failed}", rep.replied)
 	}
 }
 
@@ -144,15 +202,17 @@ func TestHandle_UnknownRoutingKey_ReturnsError(t *testing.T) {
 	}
 }
 
-func TestHandle_SendFails_ReturnsError(t *testing.T) {
+func TestHandle_SendFails_NoSaga_ReturnsError(t *testing.T) {
 	f := &fakeSender{err: errors.New("smtp down")}
 	c := NewConsumer(f, &fakeDedup{})
+	fastRetry(c, 1)
 
+	// No saga id and the send fails -> no reply path -> surface error so Run DLQs it.
 	err := c.handle(context.Background(), &fakeReplier{}, delivery(notification.RoutingConfirm,
 		notification.ConfirmationRequest{To: "a@b.com", ConfirmURL: "http://x/c/t"}))
 
 	if err == nil {
-		t.Fatal("want error when send fails, so Run nacks -> redeliver/DLQ instead of acking")
+		t.Fatal("want error when a non-saga send fails, so Run nacks -> DLQ")
 	}
 }
 

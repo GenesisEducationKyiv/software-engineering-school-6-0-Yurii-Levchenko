@@ -125,7 +125,7 @@ func run() error {
 	// narrows the startup window where an early reply could be published to a
 	// not-yet-declared queue and dropped on a fresh broker (review: k1llzers).
 	// Reconnect loop keeps a RabbitMQ blip from taking down the HTTP server.
-	replyConsumer := orchestrator.NewReplyConsumer(sagaStore)
+	replyConsumer := orchestrator.NewReplyConsumer(sagaStore, subStore)
 	go func() {
 		for {
 			if err := replyConsumer.Run(ctx, cfg.RabbitMQURL); err != nil {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github-release-notifier/internal/notification"
 
@@ -26,18 +27,20 @@ type emailSender interface {
 
 // Consumer reads notification commands from RabbitMQ and sends the emails.
 type Consumer struct {
-	sender emailSender
-	dedup  deduper
+	sender      emailSender
+	dedup       deduper
+	maxAttempts int           // email send attempts before reporting failure
+	backoff     time.Duration // wait between attempts
 }
 
 func NewConsumer(sender emailSender, dedup deduper) *Consumer {
-	return &Consumer{sender: sender, dedup: dedup}
+	return &Consumer{sender: sender, dedup: dedup, maxAttempts: 3, backoff: 500 * time.Millisecond}
 }
 
 // replier publishes a saga reply (a step outcome) back to the orchestrator. An
 // interface so the message-handling logic stays testable without a real broker.
 type replier interface {
-	ReplyConfirmation(ctx context.Context, sagaID string) error
+	ReplyConfirmation(ctx context.Context, sagaID, status string) error
 }
 
 // channelReplier publishes saga replies on the consumer's AMQP channel. Reusing
@@ -47,8 +50,8 @@ type channelReplier struct {
 	ch *amqp.Channel
 }
 
-func (r *channelReplier) ReplyConfirmation(ctx context.Context, sagaID string) error {
-	body, err := json.Marshal(notification.SagaReply{SagaID: sagaID, Status: notification.SagaStatusSent})
+func (r *channelReplier) ReplyConfirmation(ctx context.Context, sagaID, status string) error {
+	body, err := json.Marshal(notification.SagaReply{SagaID: sagaID, Status: status})
 	if err != nil {
 		return err
 	}
@@ -174,16 +177,31 @@ func (c *Consumer) dispatch(ctx context.Context, rep replier, d amqp.Delivery) e
 		if err := json.Unmarshal(d.Body, &req); err != nil {
 			return fmt.Errorf("decode confirmation: %w", err)
 		}
-		if err := c.sender.SendConfirmationEmail(req.To, req.ConfirmURL); err != nil {
-			return err
-		}
-		// Report the step outcome so the orchestrator can complete the saga.
-		// Best-effort: a lost reply is recovered by the resume sweeper,
-		// so a publish failure here must not fail the (already sent) email.
+		// Retry transient SMTP failures a few times before giving up.
+		sendErr := c.sendWithRetry(ctx, func() error {
+			return c.sender.SendConfirmationEmail(req.To, req.ConfirmURL)
+		})
+		// Report the step outcome so the orchestrator can complete or compensate
+		// the saga. Best-effort publish: a lost reply is recovered by the resume
+		// sweeper, so it must not fail the (already attempted) send.
 		if req.SagaID != "" {
-			if err := rep.ReplyConfirmation(ctx, req.SagaID); err != nil {
+			status := notification.SagaStatusSent
+			if sendErr != nil {
+				status = notification.SagaStatusFailed
+			}
+			if err := rep.ReplyConfirmation(ctx, req.SagaID, status); err != nil {
 				slog.Warn("Notifier failed to publish saga reply", "saga_id", req.SagaID, "err", err)
 			}
+		}
+		if sendErr != nil {
+			// For a saga command we already reported "failed" so the orchestrator
+			// can compensate — ack it (return nil) instead of dead-lettering forever.
+			// A non-saga command has no reply path, so surface the error to DLQ it.
+			if req.SagaID == "" {
+				return fmt.Errorf("send confirmation: %w", sendErr)
+			}
+			slog.Error("Notifier confirmation email failed after retries; reported to saga",
+				"saga_id", req.SagaID, "err", sendErr)
 		}
 		return nil
 	case notification.RoutingRelease:
@@ -195,4 +213,25 @@ func (c *Consumer) dispatch(ctx context.Context, rep replier, d amqp.Delivery) e
 	default:
 		return fmt.Errorf("unknown routing key %q", d.RoutingKey)
 	}
+}
+
+// sendWithRetry calls send up to maxAttempts times with a fixed backoff between
+// tries, so a transient SMTP hiccup doesn't immediately fail the saga. It blocks
+// the (single) consume goroutine during backoff — acceptable at this volume.
+func (c *Consumer) sendWithRetry(ctx context.Context, send func() error) error {
+	var err error
+	for attempt := 1; attempt <= c.maxAttempts; attempt++ {
+		if err = send(); err == nil {
+			return nil
+		}
+		if attempt == c.maxAttempts {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(c.backoff):
+		}
+	}
+	return err
 }
