@@ -34,6 +34,32 @@ func NewConsumer(sender emailSender, dedup deduper) *Consumer {
 	return &Consumer{sender: sender, dedup: dedup}
 }
 
+// replier publishes a saga reply (a step outcome) back to the orchestrator. An
+// interface so the message-handling logic stays testable without a real broker.
+type replier interface {
+	ReplyConfirmation(ctx context.Context, sagaID string) error
+}
+
+// channelReplier publishes saga replies on the consumer's AMQP channel. Reusing
+// the consume channel is safe: the consume loop is single-goroutine, so a publish
+// never runs concurrently with another publish or consume.
+type channelReplier struct {
+	ch *amqp.Channel
+}
+
+func (r *channelReplier) ReplyConfirmation(ctx context.Context, sagaID string) error {
+	body, err := json.Marshal(notification.SagaReply{SagaID: sagaID, Status: notification.SagaStatusSent})
+	if err != nil {
+		return err
+	}
+	return r.ch.PublishWithContext(ctx, notification.ExchangeName, notification.RoutingSagaReply, false, false, amqp.Publishing{
+		ContentType:  "application/json",
+		DeliveryMode: amqp.Persistent,
+		MessageId:    "saga-reply:" + sagaID,
+		Body:         body,
+	})
+}
+
 // Run connects to RabbitMQ, declares the topology (exchange, work queue with a
 // dead-letter route, and the DLQ), then consumes until ctx is canceled.
 func (c *Consumer) Run(ctx context.Context, url string) error {
@@ -60,6 +86,8 @@ func (c *Consumer) Run(ctx context.Context, url string) error {
 		return fmt.Errorf("consume: %w", err)
 	}
 
+	rep := &channelReplier{ch: ch}
+
 	slog.Info("Notifier consumer started", "queue", queueName)
 	for {
 		select {
@@ -70,7 +98,7 @@ func (c *Consumer) Run(ctx context.Context, url string) error {
 			if !ok {
 				return fmt.Errorf("deliveries channel closed")
 			}
-			if err := c.handle(ctx, d); err != nil {
+			if err := c.handle(ctx, rep, d); err != nil {
 				slog.Error("Notifier failed to process message, dead-lettering",
 					"routing_key", d.RoutingKey, "message_id", d.MessageId, "err", err)
 				_ = d.Nack(false, false) // requeue=false -> routed to the DLQ
@@ -112,7 +140,7 @@ func (c *Consumer) declareTopology(ch *amqp.Channel) error {
 // handle runs the idempotent-consumer flow: skip if already processed, send the
 // email, then mark it processed. A returned error tells Run to dead-letter the
 // message; nil means ack.
-func (c *Consumer) handle(ctx context.Context, d amqp.Delivery) error {
+func (c *Consumer) handle(ctx context.Context, rep replier, d amqp.Delivery) error {
 	if d.MessageId != "" {
 		seen, err := c.dedup.AlreadyProcessed(ctx, d.MessageId)
 		if err != nil {
@@ -125,7 +153,7 @@ func (c *Consumer) handle(ctx context.Context, d amqp.Delivery) error {
 		}
 	}
 
-	if err := c.dispatch(d); err != nil {
+	if err := c.dispatch(ctx, rep, d); err != nil {
 		return err
 	}
 
@@ -137,15 +165,27 @@ func (c *Consumer) handle(ctx context.Context, d amqp.Delivery) error {
 	return nil
 }
 
-// dispatch decodes one delivery by its routing key and sends the email.
-func (c *Consumer) dispatch(d amqp.Delivery) error {
+// dispatch decodes one delivery by its routing key, sends the email, and (for a
+// saga-driven confirmation) reports the outcome back to the orchestrator.
+func (c *Consumer) dispatch(ctx context.Context, rep replier, d amqp.Delivery) error {
 	switch d.RoutingKey {
 	case notification.RoutingConfirm:
 		var req notification.ConfirmationRequest
 		if err := json.Unmarshal(d.Body, &req); err != nil {
 			return fmt.Errorf("decode confirmation: %w", err)
 		}
-		return c.sender.SendConfirmationEmail(req.To, req.ConfirmURL)
+		if err := c.sender.SendConfirmationEmail(req.To, req.ConfirmURL); err != nil {
+			return err
+		}
+		// Report the step outcome so the orchestrator can complete the saga.
+		// Best-effort: a lost reply is recovered by the resume sweeper,
+		// so a publish failure here must not fail the (already sent) email.
+		if req.SagaID != "" {
+			if err := rep.ReplyConfirmation(ctx, req.SagaID); err != nil {
+				slog.Warn("Notifier failed to publish saga reply", "saga_id", req.SagaID, "err", err)
+			}
+		}
+		return nil
 	case notification.RoutingRelease:
 		var req notification.ReleaseRequest
 		if err := json.Unmarshal(d.Body, &req); err != nil {

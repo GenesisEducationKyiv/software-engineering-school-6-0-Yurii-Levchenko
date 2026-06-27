@@ -131,6 +131,23 @@ func run() error {
 	)
 	go outboxRelay.Run(ctx)
 
+	// --- Start the saga reply consumer ---
+	// Consumes the notifier's replies and advances sagas (-> completed). Wrapped
+	// in a reconnect loop so a RabbitMQ blip doesn't take down the HTTP server.
+	replyConsumer := orchestrator.NewReplyConsumer(sagaStore)
+	go func() {
+		for {
+			if err := replyConsumer.Run(ctx, cfg.RabbitMQURL); err != nil {
+				slog.Error("Saga reply consumer stopped, retrying", "err", err)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(5 * time.Second):
+			}
+		}
+	}()
+
 	// --- Setup Router ---
 	// Router wiring lives in internal/app so that integration tests can
 	// build the same router without spinning up main().
