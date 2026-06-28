@@ -61,8 +61,8 @@ func (s *Store) GetSubscriptionByEmailAndRepo(email, repo string) (*Subscription
 }
 
 func (s *Store) ConfirmSubscription(token string) error {
-	query := `UPDATE subscriptions SET confirmed = true, status = 'confirmed' WHERE token = $1`
-	_, err := s.db.Exec(query, token)
+	query := `UPDATE subscriptions SET confirmed = true, status = $1 WHERE token = $2`
+	_, err := s.db.Exec(query, StatusConfirmed, token)
 	return err
 }
 
@@ -70,8 +70,8 @@ func (s *Store) ConfirmSubscription(token string) error {
 // sent (saga compensation C1). We mark, not delete — the row stays as an
 // auditable terminal state and a future re-subscribe can reactivate it.
 func (s *Store) MarkFailed(ctx context.Context, id int) error {
-	const q = `UPDATE subscriptions SET status = 'failed' WHERE id = $1`
-	res, err := s.db.ExecContext(ctx, q, id)
+	const q = `UPDATE subscriptions SET status = $1 WHERE id = $2`
+	res, err := s.db.ExecContext(ctx, q, StatusFailed, id)
 	if err != nil {
 		return fmt.Errorf("mark subscription %d failed: %w", id, err)
 	}
@@ -79,6 +79,17 @@ func (s *Store) MarkFailed(ctx context.Context, id int) error {
 	// it instead of a silent no-op (review: k1llzers).
 	if n, err := res.RowsAffected(); err == nil && n == 0 {
 		return fmt.Errorf("mark subscription %d failed: no rows updated", id)
+	}
+	return nil
+}
+
+// ReactivateInTx revives a previously failed subscription within the given
+// transaction: a fresh token, back to pending and unconfirmed. The orchestrator
+// pairs it with a new saga so a re-subscribe reuses the row (no duplicate).
+func (s *Store) ReactivateInTx(ctx context.Context, ext sqlx.ExtContext, id int, token string) error {
+	const q = `UPDATE subscriptions SET token = $1, confirmed = false, status = $2 WHERE id = $3`
+	if _, err := ext.ExecContext(ctx, q, token, StatusPending, id); err != nil {
+		return fmt.Errorf("reactivate subscription %d: %w", id, err)
 	}
 	return nil
 }

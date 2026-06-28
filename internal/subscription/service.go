@@ -43,6 +43,7 @@ type GitHubClient interface {
 // concretely) so the domain layer stays free of transaction/outbox details.
 type sagaStarter interface {
 	StartConfirmation(ctx context.Context, email, repo, token, confirmURL string) error
+	ReactivateConfirmation(ctx context.Context, subscriptionID int, email, repo, token, confirmURL string) error
 }
 
 // Service contains all business logic for the subscription system
@@ -102,25 +103,33 @@ func (s *Service) Subscribe(ctx context.Context, email, repoStr string) error {
 		return ErrRepoNotFound
 	}
 
-	// 4. Check if already subscribed
+	// 4. Look up any existing subscription for this (email, repo).
 	existing, err := s.subs.GetSubscriptionByEmailAndRepo(email, repoStr)
-	// it returns nil - no duplicates so we can proceed with creating a subscription
 	if err != nil {
 		return fmt.Errorf("database error: %w", err)
 	}
-	if existing != nil {
-		return ErrAlreadySubscribed
-	}
 
-	// 5. Start the subscribe saga: step T1 transactionally creates the pending
-	// subscription, records the saga, and enqueues the confirmation-email command
-	// to the outbox (the relay publishes it). See ADR-010.
 	token := uuid.New().String()
 	confirmURL := fmt.Sprintf("%s/api/confirm/%s", s.baseURL, token)
+
+	// 5. Start (or reactivate) the subscribe saga. Step T1 transactionally writes
+	// the subscription, the saga, and the confirmation-email command to the outbox
+	// (the relay publishes it). See ADR-010.
+	if existing != nil {
+		// A pending or confirmed subscription is a real duplicate -> reject. A
+		// previously failed one is revived (same row, fresh saga), not blocked.
+		if existing.Status != StatusFailed {
+			return ErrAlreadySubscribed
+		}
+		if err := s.saga.ReactivateConfirmation(ctx, existing.ID, email, repoStr, token, confirmURL); err != nil {
+			return fmt.Errorf("failed to reactivate subscription saga: %w", err)
+		}
+		return nil
+	}
+
 	if err := s.saga.StartConfirmation(ctx, email, repoStr, token, confirmURL); err != nil {
 		return fmt.Errorf("failed to start subscription saga: %w", err)
 	}
-
 	return nil
 }
 
