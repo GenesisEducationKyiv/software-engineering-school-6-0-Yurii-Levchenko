@@ -52,6 +52,7 @@ func (m *mockRepo) GetSubscriptionByEmailAndRepo(email, repo string) (*Subscript
 func (m *mockRepo) ConfirmSubscription(token string) error {
 	if sub, ok := m.tokenMap[token]; ok {
 		sub.Confirmed = true
+		sub.Status = StatusConfirmed
 	}
 	return nil
 }
@@ -65,10 +66,10 @@ func (m *mockRepo) DeleteSubscription(token string) error {
 	return nil
 }
 
-func (m *mockRepo) GetActiveSubscriptionsByEmail(email string) ([]Subscription, error) {
+func (m *mockRepo) GetSubscriptionsByEmail(email string) ([]Subscription, error) {
 	var result []Subscription
 	for _, sub := range m.subscriptions {
-		if sub.Email == email && sub.Confirmed {
+		if sub.Email == email {
 			result = append(result, *sub)
 		}
 	}
@@ -346,28 +347,36 @@ func TestUnsubscribe_TokenNotFound(t *testing.T) {
 	}
 }
 
-func TestGetSubscriptions_ReturnsOnlyConfirmed(t *testing.T) {
+func TestGetSubscriptions_ReturnsAllWithStatus(t *testing.T) {
 	svc, repo, _, _ := setupTestService()
 
-	// two subscriptions, only one confirmed
+	// Two subscriptions: confirm one, leave the other pending.
 	_ = repo.CreateSubscription(&Subscription{
-		Email: "user@example.com", Repo: "golang/go", Token: "t1",
+		Email: "user@example.com", Repo: "golang/go", Token: "t1", Status: StatusPending,
 	})
 	_ = repo.CreateSubscription(&Subscription{
-		Email: "user@example.com", Repo: "facebook/react", Token: "t2",
+		Email: "user@example.com", Repo: "facebook/react", Token: "t2", Status: StatusPending,
 	})
-	_ = svc.Confirm("t1") // confirm only golang/go
+	_ = svc.Confirm("t1") // golang/go -> confirmed
 
 	subs, err := svc.GetSubscriptions("user@example.com")
 	if err != nil {
 		t.Fatalf("GetSubscriptions failed: %v", err)
 	}
 
-	if len(subs) != 1 {
-		t.Errorf("Expected 1 subscription, got %d", len(subs))
+	// Now ALL subscriptions are returned, each with its status (not only confirmed).
+	if len(subs) != 2 {
+		t.Fatalf("Expected 2 subscriptions, got %d", len(subs))
 	}
-	if len(subs) > 0 && subs[0].Repo != "golang/go" {
-		t.Errorf("Expected golang/go, got %s", subs[0].Repo)
+	statusByRepo := map[string]string{}
+	for _, s := range subs {
+		statusByRepo[s.Repo] = s.Status
+	}
+	if statusByRepo["golang/go"] != StatusConfirmed {
+		t.Errorf("golang/go status = %q, want confirmed", statusByRepo["golang/go"])
+	}
+	if statusByRepo["facebook/react"] != StatusPending {
+		t.Errorf("facebook/react status = %q, want pending", statusByRepo["facebook/react"])
 	}
 }
 

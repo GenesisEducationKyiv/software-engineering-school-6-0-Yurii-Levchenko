@@ -261,7 +261,7 @@ func TestE2E_LoadSubscriptions_EmptyForUnknownEmail(t *testing.T) {
 	// race with the AJAX replacement. We instead wait for the specific
 	// new text, which only appears AFTER the fetch completes.
 	step(t, "wait for empty-state message",
-		page.GetByText("No active subscriptions found.").WaitFor())
+		page.GetByText("No subscriptions found.").WaitFor())
 }
 
 // --- 5. Load subscriptions: after confirmation, the repo appears ---

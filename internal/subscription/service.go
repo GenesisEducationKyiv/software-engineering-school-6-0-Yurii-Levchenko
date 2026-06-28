@@ -19,7 +19,7 @@ type SubscriptionStore interface {
 	GetSubscriptionByEmailAndRepo(email, repo string) (*Subscription, error)
 	ConfirmSubscription(token string) error
 	DeleteSubscription(token string) error
-	GetActiveSubscriptionsByEmail(email string) ([]Subscription, error)
+	GetSubscriptionsByEmail(email string) ([]Subscription, error)
 	GetActiveRepos() ([]string, error)
 	GetSubscribersByRepo(repo string) ([]Subscription, error)
 }
@@ -172,12 +172,13 @@ func (s *Service) Unsubscribe(token string) error {
 	return s.subs.DeleteSubscription(token)
 }
 
-// returns all active subscriptions for email. basically runs SQL query
+// GetSubscriptions returns all subscriptions for the email (each with its
+// status), so the caller can show pending / confirmed / failed.
 func (s *Service) GetSubscriptions(email string) ([]Subscription, error) {
 	if !ValidateEmail(email) {
 		return nil, ErrInvalidEmail
 	}
-	return s.subs.GetActiveSubscriptionsByEmail(email)
+	return s.subs.GetSubscriptionsByEmail(email)
 }
 
 // ActiveRepos returns every repo that has at least one confirmed subscription.
