@@ -1,8 +1,8 @@
 # GitHub Release Notification API
 
-A monolith API service that allows users to subscribe to email notifications about new releases of GitHub repositories.
+A service that lets users subscribe to email notifications about new releases of GitHub repositories. **Two processes** — a modular Go monolith (HTTP API + release scanner + saga orchestrator) and a separate **notifier** microservice — communicating asynchronously over **RabbitMQ**.
 
-Built with **Go**, **Gin**, **PostgreSQL**, **Docker**.
+Built with **Go**, **Gin**, **PostgreSQL**, **Redis**, **RabbitMQ**, **Docker**.
 
 ## Design Decisions
 
@@ -25,49 +25,24 @@ Built with **Go**, **Gin**, **PostgreSQL**, **Docker**.
 ## Architecture
 
 ```
-  ┌──────────────────────────────────────────────────────────────────────────────┐
-  │                             Docker Compose                                   │
-  │                                                                              │
-  │  ┌───────────────────┐   ┌─────────┐   ┌──────────────────────────────────┐  │
-  │  │    PostgreSQL     │   │  Redis  │   │           Go App                 │  │
-  │  │      :5432        │   │  :6379  │   │           :8080                  │  │
-  │  │                   │   │         │   │                                  │  │
-  │  │  Tables:          │   │ Cached: │   │  ┌──────────────────────────┐    │  │
-  │  │  - subscriptions  │   │ - repo  │   │  │   Gin HTTP Router        │    │  │
-  │  │  - repositories   │   │  exists │   │  │   + Static HTML at /     │    │  │
-  │  │                   │   │ - latest│   │  └─────────────┬────────────┘    │  │
-  │  │                   │   │  release│   │                │                 │  │
-  │  │                   │   │         │   │  ┌─────────────▼────────────┐    │  │
-  │  │                   │   │  TTL:   │   │  │       Handlers           │    │  │
-  │  │                   │   │  10 min │   │  └─────────────┬────────────┘    │  │
-  │  │                   │   │         │   │                │                 │  │
-  │  │                   │   │         │   │  ┌─────────────▼────────────┐    │  │
-  │  │                   │   │         │   │  │       Service            │    │  │
-  │  │                   │   │         │   │  │  (business logic layer)  │    │  │
-  │  │                   │   │         │   │  └──┬──────┬──────────┬─────┘    │  │
-  │  │                   │   │         │   │     │      │          │          │  │
-  │  │                   │   │         │   │     ▼      ▼          ▼          │  │
-  │  │                   │◄──┼─────────┼───┼─ Repo   Cached     Notifier      │  │
-  │  │                   │   │         │◄──┼─ sitory  GitHub     (SMTP)       │  │
-  │  │                   │   │         │   │          Client        │         │  │
-  │  └───────────────────┘   └─────────┘   │            │           │         │  │
-  │                                        │            ▼           ▼         │  │
-  │                                        │       GitHub API   Mailtrap      │  │
-  │                                        │                                  │  │
-  │                                        │  ┌──────────────────────────┐    │  │
-  │                                        │  │  Scanner (goroutine)     │    │  │
-  │                                        │  │  Polling loop: 5 min     │    │  │
-  │                                        │  │  Uses: CachedGitHub,     │    │  │
-  │                                        │  │  Repository, Notifier    │    │  │
-  │                                        │  │  Stops via context.Ctx   │    │  │
-  │                                        │  └──────────────────────────┘    │  │
-  │                                        └──────────────────────────────────┘  │
-  └──────────────────────────────────────────────────────────────────────────────┘
-                                      ▲
-                                      │
-                          User (browser / curl / Postman)
-                          http://localhost:8080
+                    ┌──────────────────────── Docker Compose ─────────────────────────────┐
+ User ─HTTP─▶:8080  │  ┌─ Monolith ("server") ───────────────────────────────────────────┐ │
+ (browser/curl)     │  │  Gin router → handlers → subscription.Service                     │ │
+                    │  │  Scanner goroutine (polls GitHub via Redis-cached client)         │ │
+                    │  │  Orchestrator: saga T1 · outbox relay · reply-consumer · sweeper  │ │
+                    │  └───────────────┬─────────────────────────────────┬──────────────────┘ │
+                    │  Postgres ───────┘  (subscriptions·repositories·    │ publish / consume   │
+                    │  Redis (cache + dedup)   saga·outbox)               ▼                      │
+                    │                                          [ RabbitMQ ] exchange            │
+                    │                                          cmd: confirmation/release        │
+                    │                                          reply: saga.reply                │
+                    │  ┌─ Notifier microservice ("notifier") ───────────┴─────────────────────┐ │
+                    │  │  consume → dedup (Redis) → SMTP → Mailpit → reply sent/failed         │ │
+                    │  └────────────────────────────────────────────────────────────────────────┘ │
+                    │  GitHub API (HTTPS, from monolith)                                          │
+                    └──────────────────────────────────────────────────────────────────────────────┘
 ```
+> Detailed component design, diagrams, and trade-offs: [`system-design/README.md`](./system-design/README.md) and [ADRs](./system-design/ADR).
 
 ### Data Flow: Subscribe Request
 ```
@@ -85,16 +60,16 @@ User → POST /api/subscribe {"email":"...", "repo":"owner/repo"}
          └── Cache MISS → call GitHub API → store in Redis (TTL 10 min)
          │
          ▼
-      Repository: check DB for duplicate (email + repo)
+      Store: check DB for duplicate (email + repo) — reactivate if previously failed
          │
          ▼
-      Repository: INSERT subscription (confirmed=false, token=UUID)
-         │
-         ▼
-      Notifier: send confirmation email via SMTP
+      Orchestrator (saga T1, one tx): INSERT subscription(pending) + saga + outbox command
          │
          ▼
       Return 200 {"message": "subscription created"}
+         ┊
+         ┄┄ async ┄┄▶ relay → RabbitMQ → notifier → SMTP (confirmation email)
+                       notifier reply → orchestrator → saga = completed
 ```
 
 ### Data Flow: Scanner Cycle (every 5 minutes)
@@ -118,10 +93,10 @@ Scanner goroutine wakes up
          └── New tag → UPDATE last_seen_tag
                           │
                           ▼
-                       Repository: get all subscribers for this repo
+                       Store: get all confirmed subscribers for this repo
                           │
                           ▼
-                       Notifier: send release email to each subscriber
+                       Publish a release command per subscriber → RabbitMQ → notifier sends the email
 ```
 
 ### How It Works
@@ -130,9 +105,9 @@ Scanner goroutine wakes up
 - Validates email format and repo format (`owner/repo`)
 - Calls GitHub API to verify the repository exists (404 if not, 400 if bad format)
 - Checks for duplicate subscription (409 if already subscribed)
-- Creates subscription record with `confirmed=false` and a UUID token
-- Sends confirmation email via SMTP with a clickable confirm link
-- Returns 200
+- Starts the subscribe **saga** (step T1, one transaction): creates the subscription (`pending`, UUID token) + the saga record + an outbox command — atomically
+- The confirmation email is sent **asynchronously** by the notifier (relay → RabbitMQ → notifier → SMTP); a permanent send failure compensates the saga and marks the subscription `failed`
+- Returns 200 ("check your email")
 
 **2. Confirm** — `GET /api/confirm/{token}`
 - Looks up subscription by token
@@ -152,7 +127,7 @@ Scanner goroutine wakes up
 - Returns 200
 
 **5. List subscriptions** — `GET /api/subscriptions?email={email}`
-- Returns all confirmed subscriptions for the given email
+- Returns all subscriptions for the given email, each with its `status` (`pending` / `confirmed` / `failed`)
 
 ## Tested and Verified
 
@@ -190,13 +165,12 @@ cp .env.example .env
 ### 2. Fill in `.env`
 
 ```env
-# Required — get from https://mailtrap.io -> Email Testing -> Inboxes -> SMTP Settings
-SMTP_USER=your_mailtrap_username
-SMTP_PASS=your_mailtrap_password
-
 # Optional — increases GitHub API rate limit from 60 to 5000 req/hr
 # Get from https://github.com/settings/tokens (no scopes needed)
 GITHUB_TOKEN=your_github_token
+
+# Email in dev goes to Mailpit (no credentials needed) — UI at http://localhost:8025.
+# For a real provider (SES/SendGrid/Mailgun) set SMTP_HOST/PORT/USER/PASS for the notifier.
 ```
 
 ### 3. Start everything
@@ -264,32 +238,29 @@ curl http://localhost:8080/api/unsubscribe/YOUR-TOKEN-HERE
 ## Project Structure
 
 ```
-├── main.go                          # Entry point: wires dependencies, starts server + scanner
+├── main.go                          # Monolith entry: wiring; server + scanner + outbox relay + saga reply-consumer + sweeper
+├── cmd/notifier/                    # Notifier microservice (separate binary): consumer, dedup, SMTP
 ├── go.mod / go.sum                  # Dependencies
-├── Dockerfile                       # Multi-stage build (golang → alpine, ~15MB final image)
-├── docker-compose.yml               # Orchestrates app + PostgreSQL + Redis containers
-├── .env.example                     # Template for environment variables
-├── .github/workflows/ci.yml         # GitHub Actions CI pipeline (test + lint)
-├── static/
-│   └── index.html                   # HTML subscription page served at /
-├── migrations/
-│   ├── 000001_init.up.sql           # Creates subscriptions + repositories tables
-│   └── 000001_init.down.sql         # Drops tables (rollback)
+├── Dockerfile / Dockerfile.notifier # Multi-stage builds for the two binaries
+├── docker-compose.yml               # app + notifier + postgres + redis + rabbitmq + mailpit
+├── swagger.yaml                     # OpenAPI 2.0 spec for the 4 endpoints
+├── static/index.html                # HTML subscription page served at /
+├── migrations/                      # 000001 init … 000005 subscription status (golang-migrate, runs on startup)
 ├── internal/
-│   ├── config/config.go             # Loads environment variables into Config struct
-│   ├── model/subscription.go        # Data structures with JSON and DB tags
-│   ├── handler/handler.go           # HTTP handlers — parse requests, return responses
-│   ├── service/service.go           # Business logic — validation, orchestration, error types
-│   ├── service/service_test.go      # Unit tests (13 tests, 82% coverage)
-│   ├── repository/repository.go     # Database layer — SQL queries with sqlx
-│   ├── github/client.go             # GitHub API client with 429 retry
-│   ├── github/cached_client.go      # Redis-cached wrapper for GitHub client
-│   ├── cache/cache.go               # Redis cache layer (get/set with TTL)
-│   ├── metrics/metrics.go           # Prometheus counters, histograms, and Gin middleware
-│   ├── middleware/auth.go           # API key authentication middleware
-│   ├── scanner/scanner.go           # Background release checker goroutine
-│   └── notifier/notifier.go         # SMTP email sender
-└── postman_collection.json          # Importable Postman collection for all endpoints
+│   ├── app/                         # BuildRouter — wires routes (shared by main + integration tests)
+│   ├── config/                      # env → Config
+│   ├── subscription/                # domain: Service + Store (subscriptions) + entity + errors + Subscriber DTO
+│   ├── releasetracking/             # domain: Scanner + Store (repositories) + Repository entity
+│   ├── orchestrator/                # Saga: orchestrator (T1) + saga Store + reply-consumer + sweeper
+│   ├── outbox/                      # transactional outbox: Store + relay
+│   ├── notification/                # BrokerPublisher + command/reply DTOs (wire contract)
+│   ├── githubgateway/               # GitHub client + Redis-cached wrapper
+│   ├── repospec/                    # shared kernel: RepoSpec value object
+│   ├── handler/  middleware/        # Gin handlers; API-key auth + request-logger
+│   ├── cache/  metrics/  logging/   # Redis cache; Prometheus; slog setup
+│   └── integration/                 # integration tests (build tag `integration`, testcontainers)
+├── e2e/                             # Playwright-go e2e tests (build tag `e2e`)
+└── system-design/                   # system-design doc + ADRs (001–010)
 ```
 
 ## Running Tests
@@ -312,13 +283,17 @@ Tests use Go interfaces with mock implementations — no database or network req
 | `DATABASE_URL` | No | `postgres://postgres:postgres@db:5432/notifier?sslmode=disable` | PostgreSQL connection string |
 | `APP_PORT` | No | `8080` | HTTP server port |
 | `BASE_URL` | No | `http://localhost:8080` | Base URL for email links |
-| `SMTP_HOST` | Yes | `sandbox.smtp.mailtrap.io` | SMTP server host |
-| `SMTP_PORT` | No | `587` | SMTP server port |
-| `SMTP_USER` | Yes | — | SMTP username (Mailtrap) |
-| `SMTP_PASS` | Yes | — | SMTP password (Mailtrap) |
-| `SMTP_FROM` | No | `noreply@github-notifier.local` | Sender email address |
+| `SMTP_HOST` | No | `mailpit` | SMTP host (**notifier**) — Mailpit in dev |
+| `SMTP_PORT` | No | `1025` | SMTP port (notifier) |
+| `SMTP_USER` | No | — | SMTP username (empty for Mailpit; set for a real provider) |
+| `SMTP_PASS` | No | — | SMTP password (empty for Mailpit) |
+| `SMTP_FROM` | No | `noreply@github-notifier.local` | Sender email address (notifier) |
 | `GITHUB_TOKEN` | No | — | GitHub token (60 → 5000 req/hr) |
-| `SCAN_INTERVAL_SECONDS` | No | `300` | Scanner polling interval in seconds |
-| `REDIS_URL` | No | `redis://redis:6379/0` | Redis connection URL (app works without it) |
+| `SCAN_INTERVAL_SECONDS` | No | `600` | Scanner polling interval in seconds |
+| `REDIS_URL` | No | `redis://redis:6379/0` | Redis URL (GitHub cache + notifier dedup) |
 | `CACHE_TTL_SECONDS` | No | `600` | Cache TTL for GitHub API responses (10 min) |
+| `RABBITMQ_URL` | No | `amqp://guest:guest@rabbitmq:5672/` | RabbitMQ connection URL |
+| `OUTBOX_POLL_INTERVAL_MS` | No | `1000` | How often the outbox relay polls for unpublished commands |
+| `SAGA_SWEEP_INTERVAL_SECONDS` | No | `60` | How often the resume-sweeper scans for stuck sagas |
+| `SAGA_STALE_AFTER_SECONDS` | No | `120` | How long a saga may sit non-terminal before it's re-driven |
 | `API_KEY` | No | — | API key for endpoint protection (empty = auth disabled) |

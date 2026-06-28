@@ -1,6 +1,6 @@
 # System Design: GitHub Release Notification API
 
-Сервіс, який дозволяє користувачам підписатися на email-сповіщення про нові релізи GitHub-репозиторіїв. Реалізований як моноліт на Go з трьома відповідальностями в одному процесі: HTTP API, фоновий сканер релізів, email-надсилач.
+Сервіс, який дозволяє користувачам підписатися на email-сповіщення про нові релізи GitHub-репозиторіїв. Складається з **двох процесів**: модульний моноліт на Go (HTTP API, фоновий сканер релізів, Saga-оркестратор) і окремий мікросервіс-**notifier**, що надсилає email. Спілкуються **асинхронно через RabbitMQ** (HW7 — виніс notifier; HW8 — брокер; HW9 — оркестрована Saga).
 
 > Архітектурні рішення задокументовані в [/system-design/ADR](./ADR). У цьому документі — загальна картина системи: вимоги, навантаження, компоненти, потоки, масштабування.
 
@@ -36,7 +36,7 @@
 
 **Відомі gaps (TODO для production):**
 - **Email worker pool:** наразі сканер надсилає листи синхронно в одному циклі. При 1K+ підписників на один популярний реліз цикл блокується на хвилини (1K × ~100ms = ~100s) і пропускає наступний tick. Потрібен пул горутин (10-50 одночасних SMTP-з'єднань) із семафором; це знімає блокування і дає реалістичну пропускну здатність на пікових релізах
-- **At-least-once email delivery:** наразі best-effort. Якщо Notifier падає між `INSERT subscription` і `SMTP send` — лист не йде. Потрібен outbox-pattern (persisted queue в БД + retry-worker)
+- **At-least-once email delivery:** ✅ реалізовано (HW8/HW9) — transactional outbox + RabbitMQ (manual ack, DLQ) + Redis-дедуп + resume-sweeper. Лишається email worker-pool (вище) для паралелізації відправок
 - **Структуроване логування:** перехід на `slog` або `zap` із JSON-output для агрегації в Datadog/Grafana
 - **HTTPS:** треба reverse proxy (Caddy/nginx) перед app у проді
 - **Distributed lock на сканер:** для multi-instance розгортання (зараз 1 інстанс — race condition неможливий)
@@ -45,10 +45,10 @@
 
 ### Обмеження
 
-- **Моноліт:** усі три ролі (API, Scanner, Notifier) живуть в одному процесі
+- **Два процеси:** модульний моноліт (API + Scanner + Saga-оркестратор) і окремий notifier-мікросервіс; зв'язок через RabbitMQ
 - **GitHub API rate limits:** 60 req/h без токена, 5000 з токеном
-- **SMTP-провайдер:** покищо надсилання листів лише на Mailtrap (sandbox) для розробки
-- **Бюджет інфраструктури:** мінімальний — 3 контейнери (app, postgres, redis)
+- **SMTP (dev):** листи йдуть у Mailpit (локальний fake-inbox + UI); у проді — SES/SendGrid/Mailgun через env, без зміни коду
+- **Бюджет інфраструктури:** docker-compose — app, notifier, postgres, redis, rabbitmq, mailpit
 
 ---
 
@@ -102,52 +102,72 @@
 flowchart LR
     User([User<br/>browser/curl/Postman])
     GH[GitHub API]
-    SMTP[SMTP server<br/>Mailtrap]
+    Mailpit[Mailpit<br/>SMTP + UI]
 
     subgraph "Docker Compose Network"
-        App[App container<br/>Go monolith :8080]
-        DB[(PostgreSQL<br/>:5432)]
-        Redis[(Redis<br/>:6379)]
+        App[Monolith<br/>API + Scanner + Saga :8080]
+        DB[(PostgreSQL)]
+        Redis[(Redis)]
+        MQ[[RabbitMQ]]
+        Notifier[Notifier<br/>microservice]
     end
 
     User -->|HTTP /api/*<br/>HTML page /| App
     App -->|sqlx queries| DB
     App -->|cache get/set| Redis
     App -->|HTTPS REST| GH
-    App -->|SMTP| SMTP
-    SMTP -.->|email with link| User
+    App -->|publish commands| MQ
+    MQ -->|consume| Notifier
+    Notifier -->|reply sent/failed| MQ
+    MQ -->|reply| App
+    Notifier -->|dedup| Redis
+    Notifier -->|SMTP| Mailpit
+    Mailpit -.->|email with link| User
 ```
 
 ### Внутрішня структура моноліту
+
+Notifier тепер — окремий процес (нижче). У моноліті з'явились Saga-оркестратор і transactional outbox; назовні моноліт говорить лише через RabbitMQ.
 
 ```mermaid
 flowchart TB
     Router[Gin Router]
 
     subgraph "HTTP layer"
-        H1[Subscribe handler]
-        H2[Confirm handler]
-        H3[Unsubscribe handler]
-        H4[List subscriptions handler]
+        H1[Subscribe]
+        H2[Confirm]
+        H3[Unsubscribe]
+        H4[List]
         Static[Static / metrics / health]
     end
 
-    Service[Service layer<br/>business logic, validation, errors]
+    Service[subscription.Service<br/>validation, errors]
+    Orch[orchestrator<br/>Saga T1 · reply-consumer · sweeper]
 
-    subgraph "External adapters"
-        Repo[Repository<br/>sqlx + Postgres]
-        Cached[CachedClient<br/>Redis wrapper]
-        GHClient[GitHub Client<br/>net/http]
-        Notifier[Notifier<br/>net/smtp]
+    subgraph "Stores (sqlx + Postgres)"
+        SubStore[(subscriptions)]
+        SagaStore[(saga)]
+        OutboxStore[(outbox)]
+        TrackStore[(repositories)]
     end
 
-    Scanner[Scanner goroutine<br/>5-min ticker]
+    Cached[CachedClient<br/>Redis wrapper]
+    GHClient[GitHub Client<br/>net/http]
+    Publisher[BrokerPublisher]
+    Relay[Outbox relay<br/>goroutine]
+    Scanner[Scanner goroutine]
+    MQ[[RabbitMQ]]
 
     Router --> H1 & H2 & H3 & H4 & Static
     H1 & H2 & H3 & H4 --> Service
-    Service --> Repo & Cached & Notifier
+    Service --> SubStore & Cached & Orch
+    Orch --> SubStore & SagaStore & OutboxStore
     Cached --> GHClient
-    Scanner --> Repo & Cached & Notifier
+    Relay --> OutboxStore
+    Relay --> Publisher
+    Scanner --> TrackStore & Cached & Publisher
+    Publisher -->|AMQP| MQ
+    MQ -->|replies| Orch
 ```
 
 ---
@@ -196,7 +216,7 @@ Middleware — це функції, які обгортають handler і ви�
 **Відповідальність:**
 - Валідація email через regex
 - Парсинг `owner/repo` формату
-- Координація викликів між Repository, GitHub Client, Notifier
+- Координація: валідація + перевірка repo на GitHub, тоді **делегування** створення підписки Saga-оркестратору (ADR-010) — сам Service не пише підписку й не публікує в брокер
 - Генерація UUID токенів
 - Визначення доменних помилок (`ErrXxx`)
 
@@ -224,6 +244,7 @@ erDiagram
         varchar repo
         varchar token UK
         boolean confirmed
+        varchar status
         timestamp created_at
     }
     REPOSITORIES {
@@ -231,17 +252,43 @@ erDiagram
         varchar repo UK
         varchar last_seen_tag
         timestamp last_checked_at
+        timestamp last_release_at
+    }
+    SAGA {
+        uuid id PK
+        int subscription_id
+        varchar email
+        varchar repo
+        varchar state
+        int attempts
+        text last_error
+        timestamp created_at
+        timestamp updated_at
+    }
+    OUTBOX {
+        bigserial id PK
+        uuid saga_id
+        varchar routing_key
+        varchar message_id
+        jsonb payload
+        timestamp created_at
+        timestamp published_at
     }
 ```
 
+`subscriptions.status` (`pending`/`confirmed`/`failed`) і таблиці `saga`/`outbox` додані в HW9. `saga` — стан кожної субскрайб-саги (одна на спробу); `outbox` — команди «на відправку», що relay публікує в брокер.
+
 **Ключові обмеження:**
-- `UNIQUE(email, repo)` у `subscriptions` — заборона дублікатів
+- `UNIQUE(email, repo)` у `subscriptions` — заборона дублікатів (повторна підписка на `failed`-репо реактивує той самий рядок)
 - `UNIQUE(token)` — токен як гарантовано одиничний confirm/unsubscribe URL
 - `UNIQUE(repo)` у `repositories` — один state-рядок на репо
+- partial index `outbox(id) WHERE published_at IS NULL` — relay читає лише неопубліковані
 
 **Запити:**
-- Subscriptions: Create / GetByToken / GetByEmailAndRepo / Confirm / Delete / GetActiveByEmail / GetActiveRepos / GetSubscribersByRepo
-- Repositories: GetTracking / UpsertTracking (UPSERT через `ON CONFLICT DO UPDATE`)
+- Subscriptions: CreateInTx / GetByToken / GetByEmailAndRepo / Confirm / Delete / GetSubscriptionsByEmail / GetActiveRepos / GetSubscribersByRepo / MarkFailed / ReactivateInTx
+- Repositories: GetRepoTracking / RegisterRepo / TouchLastChecked / RecordRelease (UPSERT через `ON CONFLICT DO UPDATE`)
+- Saga: CreateInTx / GetByID / UpdateState / FindResumable
+- Outbox: Enqueue / FetchUnpublished / MarkPublished / Requeue
 
 **Міграції:** `golang-migrate` запускається на старті застосунку, читає `migrations/*.up.sql` і виконує нові.
 
@@ -293,23 +340,21 @@ for {
 1. `repo.GetActiveRepos()` → список унікальних `owner/repo` із підтверджених підписок
 2. Для кожного: `github.GetLatestRelease(ctx, owner, repo)` (через кеш)
 3. Порівняти з `repositories.last_seen_tag` у БД
-4. Якщо тег новий — `repo.UpsertRepoTracking(repo, tag)` + надіслати email кожному підписнику
+4. Якщо тег новий — `RecordRelease(repo, tag)` + для кожного підписника **опублікувати release-команду в RabbitMQ** (`BrokerPublisher`); надсилає лист уже notifier
 
 **Масштабування:** на 1 інстансі. Кілька реплік без додаткової координації призвели б до дублікатних повідомлень — потрібен distributed lock (Redis або Postgres advisory lock) перед майбутнім multi-instance розгортанням.
 
-### 4.6 Notifier (SMTP)
+### 4.6 Notifier (окремий мікросервіс, RabbitMQ consumer)
 
-**Відповідальність:** надсилання email через стандартний `net/smtp`.
+**Це окремий процес** (`cmd/notifier`, свій контейнер) — не частина моноліта. Споживає команди з RabbitMQ і надсилає email через `net/smtp` (єдине місце в системі, що знає про SMTP).
 
-**Два типи листів:**
-- `SendConfirmationEmail(to, confirmURL)` — після підписки
-- `SendReleaseNotification(to, repo, tag, unsubscribeURL)` — при детекції нового релізу
-
-**Конфігурація через env:** `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`.
-
-**Дев-середовище:** Mailtrap sandbox (`sandbox.smtp.mailtrap.io:587`) — листи "приходять" у фейкову інбоксю замість реальних адрес. Безпечно для тестів.
-
-**Production-готовність:** код Notifier — це справжній SMTP, тому переключення на SES/SendGrid/Mailgun у проді — лише питання env-змінних, без зміни коду.
+- **Consume:** черга `notifications`, **manual ack** — ack лише після успішної відправки; краш до ack → redelivery (at-least-once).
+- **Idempotency:** Redis-ключ `processed:{message_id}` (TTL 24h) — дубль не шле другий лист.
+- **DLQ:** «отруйні» повідомлення (битий JSON / невідомий routing key) → `notifications.dlq`.
+- **Retry:** тимчасовий збій SMTP — кілька спроб з backoff; потім reply `failed`.
+- **Reply:** після відправки (або вичерпання спроб) публікує `SagaReply{saga_id, sent|failed}` назад оркестратору.
+- **Два типи листів:** `SendConfirmationEmail` (після підписки) і `SendReleaseNotification` (новий реліз).
+- **Конфіг через env:** `SMTP_*`, `RABBITMQ_URL`, `REDIS_URL`. Dev — Mailpit; прод — SES/SendGrid/Mailgun без зміни коду.
 
 ### 4.7 Observability (Prometheus + structured logs)
 
@@ -321,48 +366,64 @@ for {
 
 **Логи:** stdout структурований (через `log` stdlib + Gin debug logger). У продакшні треба переходити на `slog` або `zap` із JSON-output для агрегації.
 
+### 4.8 Saga-оркестратор (підписка)
+
+Підписка виконується як **оркестрована Saga** (ADR-010): «створити підписку» і «надіслати лист» — у різних сервісах, а лист незворотний, тож координуємо кроки з компенсацією.
+
+- **T1** (одна Postgres-транзакція): `INSERT subscription(pending)` + `INSERT saga(subscription_created)` + `INSERT outbox(команда)` — атомарно, без dual-write.
+- **T2:** notifier надсилає лист (ідемпотентно) і відповідає `sent`/`failed`.
+- **Завершення:** reply `sent` → saga `completed`.
+- **Компенсація (C1):** reply `failed` (після retry) → `compensating` → підписка `failed` → saga `failed` (рядок не видаляємо).
+- **Resume-sweeper:** періодично/на старті дотягує застряглі саги — re-drive `subscription_created` (загублений reply) або довершення `compensating` (краш). Відновлення без ручного втручання.
+- **Реактивація:** повторна підписка на `failed`-репо оживляє той самий рядок (новий токен → `pending`) + нова сага; стара лишається як історія.
+
+### 4.9 Transactional outbox + relay
+
+Прибирає dual-write «запис у БД + publish у брокер» (борг із ADR-009):
+
+- Команду пишемо рядком у `outbox` **тією ж транзакцією**, що й бізнес-дані (крок T1).
+- **Relay** (горутина в моноліті) опитує `outbox WHERE published_at IS NULL`, публікує в RabbitMQ, ставить `published_at`. Порядок publish→mark → at-least-once (consumer дедупить); краш між кроками → republish наступного тіку.
+
 ---
 
 ## 5. Ключові потоки
 
 ### 5.1 Subscribe flow
 
+Підписка — це Saga: синхронна частина (валідація + перевірки + крок T1 однією транзакцією) дає відповідь одразу; відправка листа доробляється асинхронно.
+
 ```mermaid
 sequenceDiagram
     participant U as User
     participant H as Handler
     participant S as Service
-    participant C as CachedClient
-    participant R as Redis
-    participant G as GitHub API
+    participant O as Orchestrator
     participant DB as Postgres
+    participant Relay
+    participant MQ as RabbitMQ
     participant N as Notifier
-    participant SMTP as SMTP
 
-    U->>H: POST /api/subscribe<br/>{email, repo}
+    U->>H: POST /api/subscribe {email, repo}
     H->>S: Subscribe(ctx, email, repo)
     S->>S: validate email + repo format
-    S->>C: CheckRepoExists(ctx, owner, repo)
-    C->>R: GET repo_exists:owner/repo
-    alt cache HIT
-        R-->>C: "true"
-        C-->>S: true
-    else cache MISS
-        C->>G: GET /repos/owner/repo
-        G-->>C: 200 OK / 404
-        C->>R: SET (TTL 10m)
-        C-->>S: true / false
-    end
-    S->>DB: SELECT WHERE email=? AND repo=?
-    DB-->>S: nil (not duplicate)
-    S->>S: generate UUID token
-    S->>DB: INSERT INTO subscriptions
-    S->>N: SendConfirmationEmail(email, link)
-    N->>SMTP: SMTP DATA
-    SMTP-->>U: email with confirm link
+    S->>S: CheckRepoExists (cached GitHub) — sync, потрібна відповідь зараз
+    S->>DB: duplicate? (email+repo) → reactivate if failed
+    Note over S,DB: T1 — одна транзакція
+    S->>O: StartConfirmation(...)
+    O->>DB: INSERT subscription(pending) + saga + outbox cmd
     S-->>H: nil
-    H-->>U: 200 {"message": "..."}
+    H-->>U: 200 "check your email"
+    Note over Relay,N: async — вже після відповіді
+    Relay->>DB: poll outbox (unpublished)
+    Relay->>MQ: publish confirmation command
+    MQ->>N: deliver
+    N->>N: dedup + SMTP send (→ Mailpit)
+    N->>MQ: reply sent
+    MQ->>O: reply consumer
+    O->>DB: saga → completed
 ```
+
+> Шлях збою: notifier не зміг надіслати → reply `failed` → оркестратор компенсує (підписка `failed`); зависла сага → resume-sweeper дотягує.
 
 ### 5.2 Scanner cycle (every 5 min)
 
@@ -374,7 +435,7 @@ sequenceDiagram
     participant C as CachedClient
     participant R as Redis
     participant G as GitHub API
-    participant N as Notifier
+    participant MQ as RabbitMQ
 
     T->>SC: tick (every 5m)
     SC->>DB: SELECT DISTINCT repo<br/>WHERE confirmed=true
@@ -397,10 +458,12 @@ sequenceDiagram
         SC->>DB: SELECT email, token<br/>WHERE repo=? AND confirmed=true
         DB-->>SC: [subscribers...]
         loop for each subscriber
-            SC->>N: SendReleaseNotification(...)
+            SC->>MQ: publish release command (BrokerPublisher)
         end
     end
 ```
+
+> Release-сповіщення публікуються в брокер напряму (без saga/outbox) — notifier їх консюмить так само, як confirmation. Saga обгортає лише subscribe-флоу.
 
 ---
 
@@ -425,14 +488,16 @@ sequenceDiagram
 | **PostgreSQL** | API повертає 500 на всі endpoints | Сервіс непрацездатний — це critical dependency |
 | **Redis** | API працює як завжди | Кеш missing → прямі виклики GitHub → ризик rate limit при високому навантаженні. Логується warning |
 | **GitHub API** (5xx або downtime) | Subscribe може провалитися (404 на CheckRepoExists інтерпретується як неіснуюче репо — TODO: розрізнити 5xx vs 404) | Сканер логує помилку і йде далі; на наступному циклі спробує знову |
-| **SMTP-провайдер** | Subscribe-запит повертає 500 (не може надіслати confirmation) | Сканер логує помилку, реліз-сповіщення не йдуть; на наступному циклі повторної спроби немає (TODO: queue з retry) |
+| **SMTP / notifier лежить** | Subscribe все одно успішний (лист у черзі), НЕ 500 | Команда чекає в черзі; notifier retry; остаточний збій → saga компенсує (підписка `failed`, видно юзеру). Релізні листи теж чекають у черзі |
+| **RabbitMQ лежить** | Subscribe успішний (команда збережена в outbox) | Relay не може опублікувати → ретраїть; брокер встав → публікує. Reply-consumer перепідключається. Нічого не губиться |
 | **GitHub rate limit (429)** | Subscribe може повільно відповісти (експ. backoff) або провалитися | Експ. backoff 2s/4s/8s, потім помилка |
 | **Контейнер app падає** | API недоступний на час рестарту | Docker `restart: on-failure` піднімає за секунди; підписки не втрачаються, бо стан у БД |
+| **Краш посеред саги** | — | Resume-sweeper на старті/періодично дотягує застряглі саги (re-drive або компенсація) |
 
 **Що поки не покрито**
-- Outbox-pattern для email — немає гарантії доставки при падінні Notifier-а між INSERT subscription і SendEmail
-- Idempotency на subscribe — можна випадково створити дублікат, якщо клієнт зробить retry. Але через `UNIQUE(email, repo)` на рівні БД не так критично
+- Email worker-pool — відправки в notifier поки послідовні (backoff блокує єдину consume-горутину); ок при малому обсязі
 - Distributed lock на сканер — multi-instance розгортання спричинить дублікати
+- Сага, зависла понад TTL дедупу (24h): re-drive sweeper'а може повторно надіслати лист (рідкісний край)
 
 ---
 
@@ -457,12 +522,15 @@ sequenceDiagram
 |---|---|---|---|
 | Мова | Go 1.26 | Статика, goroutines, alignment з Genesis | [001](./ADR/001-go-with-gin-as-thin-http-framework.md) |
 | HTTP | Gin | Тонкий router з валідацією | [001](./ADR/001-go-with-gin-as-thin-http-framework.md) |
-| Архітектура | Layered monolith | Чіткий поділ, тестованість | [002](./ADR/002-monolith-with-layered-architecture.md) |
+| Архітектура | Модульний моноліт + notifier-мікросервіс | Чіткий поділ, async-розв'язка | [002](./ADR/002-monolith-with-layered-architecture.md) |
 | ORM | sqlx (raw SQL) | Прозорість, контроль | [003](./ADR/003-sqlx-instead-of-orm.md) |
 | БД | PostgreSQL 16 | Надійність, зрілість | [003](./ADR/003-sqlx-instead-of-orm.md) |
 | Міграції | golang-migrate | SQL-файли, runs on startup | [003](./ADR/003-sqlx-instead-of-orm.md) |
 | Шедулер | In-process goroutine | Без зовнішньої інфраструктури | [004](./ADR/004-goroutine-scanner.md) |
-| Кеш | Redis 7 | TTL з коробки, persistence | [005](./ADR/005-redis-caching-for-github-api.md) |
+| Кеш + дедуп | Redis 7 | TTL з коробки; також idempotency-дедуп у notifier | [005](./ADR/005-redis-caching-for-github-api.md) |
+| Брокер | RabbitMQ 3 | надійна черга задач: ack, DLQ, routing | [009](./ADR/009-message-broker-rabbitmq.md) |
+| Розподілена транзакція | Orchestrated Saga + transactional outbox | консистентність subscribe↔email без 2PC | [010](./ADR/010-orchestrated-saga-for-subscribe.md) |
+| Email (dev) | Mailpit (SMTP + UI) | локальний fake-inbox | — |
 | Тестування | Go testing + interfaces з моками | Без зовнішніх залежностей у тестах | [006](./ADR/006-context-propagation-through-call-chain.md) |
 | Метрики | Prometheus client_golang | Стандарт індустрії | — |
 | Контейнеризація | Docker + docker-compose | Reproducible setup | — |
@@ -472,7 +540,7 @@ sequenceDiagram
 
 ## 10. Що я покращу далі
 
-- **Outbox-pattern для email** — гарантована доставка через persisted queue в БД
+- **Email worker-pool у notifier** — паралельні SMTP-відправки замість послідовних (зняти head-of-line blocking)
 - **Distributed lock на сканер** через Redis SETNX або Postgres advisory lock — для multi-instance розгортання
 - **Структуроване логування через `slog`** замість stdlib `log` — JSON-output для агрегації в Datadog/Grafana
 - **OpenTelemetry tracing** — використати наявне context propagation, додати spans у GitHub-клієнт і SMTP
