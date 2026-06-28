@@ -218,16 +218,40 @@ func TestHandle_SendFails_NoSaga_ReturnsError(t *testing.T) {
 
 func TestHandle_Duplicate_Skips(t *testing.T) {
 	f := &fakeSender{}
+	rep := &fakeReplier{}
 	c := NewConsumer(f, &fakeDedup{seen: true})
 
 	body, _ := json.Marshal(notification.ConfirmationRequest{To: "a@b.com", ConfirmURL: "http://x/c/t"})
 	d := amqp.Delivery{RoutingKey: notification.RoutingConfirm, MessageId: "confirm:t", Body: body}
 
-	if err := c.handle(context.Background(), &fakeReplier{}, d); err != nil {
+	if err := c.handle(context.Background(), rep, d); err != nil {
 		t.Fatalf("handle returned error: %v", err)
 	}
 	if len(f.confirm) != 0 {
 		t.Errorf("sent %d, want 0 — an already-processed message must be skipped", len(f.confirm))
+	}
+	if len(rep.replied) != 0 {
+		t.Errorf("replied %v, want none — no saga id, nothing to re-report", rep.replied)
+	}
+}
+
+func TestHandle_Duplicate_SagaConfirmation_RepliesSent(t *testing.T) {
+	f := &fakeSender{}
+	rep := &fakeReplier{}
+	c := NewConsumer(f, &fakeDedup{seen: true})
+
+	body, _ := json.Marshal(notification.ConfirmationRequest{SagaID: "saga-d", To: "a@b.com", ConfirmURL: "http://x/c/t"})
+	d := amqp.Delivery{RoutingKey: notification.RoutingConfirm, MessageId: "confirm:t", Body: body}
+
+	if err := c.handle(context.Background(), rep, d); err != nil {
+		t.Fatalf("handle returned error: %v", err)
+	}
+	// Skipped the send, but re-reported success so a re-driven (swept) saga completes.
+	if len(f.confirm) != 0 {
+		t.Errorf("sent %d, want 0 (duplicate must not re-send)", len(f.confirm))
+	}
+	if len(rep.replied) != 1 || rep.replied[0] != (repliedItem{"saga-d", notification.SagaStatusSent}) {
+		t.Errorf("replied = %+v, want one {saga-d, sent}", rep.replied)
 	}
 }
 

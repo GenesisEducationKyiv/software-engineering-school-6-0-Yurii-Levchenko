@@ -152,6 +152,10 @@ func (c *Consumer) handle(ctx context.Context, rep replier, d amqp.Delivery) err
 			slog.Warn("Notifier dedup check failed, processing anyway", "message_id", d.MessageId, "err", err)
 		} else if seen {
 			slog.Info("Notifier skipping duplicate", "message_id", d.MessageId)
+			// The email already went out on the first delivery. Re-report success
+			// for a saga confirmation so the resume-sweeper's re-drive can still
+			// complete the saga even though we skip the send.
+			c.replyAlreadySent(ctx, rep, d)
 			return nil
 		}
 	}
@@ -217,6 +221,23 @@ func (c *Consumer) dispatch(ctx context.Context, rep replier, d amqp.Delivery) e
 		return c.sender.SendReleaseNotification(req.To, req.Repo, req.Tag, req.UnsubscribeURL)
 	default:
 		return fmt.Errorf("unknown routing key %q", d.RoutingKey)
+	}
+}
+
+// replyAlreadySent re-publishes a "sent" reply for an already-processed saga
+// confirmation, so the resume-sweeper's re-drive completes the saga even though
+// we skip sending the email a second time. Best-effort: a non-saga or non-confirm
+// duplicate has nothing to report.
+func (c *Consumer) replyAlreadySent(ctx context.Context, rep replier, d amqp.Delivery) {
+	if d.RoutingKey != notification.RoutingConfirm {
+		return
+	}
+	var req notification.ConfirmationRequest
+	if err := json.Unmarshal(d.Body, &req); err != nil || req.SagaID == "" {
+		return
+	}
+	if err := rep.ReplyConfirmation(ctx, req.SagaID, notification.SagaStatusSent); err != nil {
+		slog.Warn("Notifier failed to re-publish saga reply on duplicate", "saga_id", req.SagaID, "err", err)
 	}
 }
 
