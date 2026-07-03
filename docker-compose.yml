@@ -63,8 +63,10 @@ services:
       # Host 9091 -> container 9090: avoids clashing with Prometheus, which
       # publishes host 9090 in the observability stack (both can run together).
       - "9091:9090"
+      - "50051:50051"  # gRPC confirmation transport (ADR-011)
     environment:
       NOTIFIER_PORT: "9090"
+      NOTIFIER_GRPC_PORT: "50051"
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
       REDIS_URL: redis://redis:6379/0
       SMTP_HOST: mailpit

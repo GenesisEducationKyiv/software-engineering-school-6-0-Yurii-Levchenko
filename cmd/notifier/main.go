@@ -5,15 +5,18 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	notifierv1 "github-release-notifier/gen/notifier/v1"
 	"github-release-notifier/internal/logging"
 
 	"github.com/joho/godotenv"
+	"google.golang.org/grpc"
 )
 
 func main() {
@@ -74,6 +77,25 @@ func run() error {
 		}
 	}()
 
+	// gRPC server: the synchronous confirmation transport (ADR-011), running
+	// alongside the AMQP consumer on its own port and sharing the same SMTP
+	// sender + Redis dedup. Idle unless the monolith runs CONFIRMATION_TRANSPORT=grpc.
+	grpcPort := getEnv("NOTIFIER_GRPC_PORT", "50051")
+	grpcSrv := grpc.NewServer()
+	notifierv1.RegisterNotifierServiceServer(grpcSrv, newConfirmationServer(sender, dedup))
+	grpcErr := make(chan error, 1)
+	go func() {
+		lis, err := net.Listen("tcp", ":"+grpcPort)
+		if err != nil {
+			grpcErr <- fmt.Errorf("grpc listen: %w", err)
+			return
+		}
+		slog.Info("Notifier gRPC server starting", "port", grpcPort)
+		if err := grpcSrv.Serve(lis); err != nil {
+			grpcErr <- fmt.Errorf("grpc serve: %w", err)
+		}
+	}()
+
 	serverErr := make(chan error, 1)
 	go func() {
 		slog.Info("Notifier service starting", "port", port)
@@ -89,11 +111,14 @@ func run() error {
 		return fmt.Errorf("notifier http server: %w", err)
 	case err := <-consumerErr:
 		return fmt.Errorf("notifier consumer: %w", err)
+	case err := <-grpcErr:
+		return fmt.Errorf("notifier grpc server: %w", err)
 	case <-quit:
 		slog.Info("Notifier shutting down gracefully")
 	}
 
 	cancel() // stop the consumer
+	grpcSrv.GracefulStop()
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
