@@ -159,7 +159,7 @@ func newTestAppWithKey(t *testing.T, apiKey string) *testApp {
 	trackStore := releasetracking.NewStore(testDB)
 	sagaStore := orchestrator.NewStore(testDB)
 	outboxStore := outbox.NewStore(testDB)
-	orch := orchestrator.New(testDB, subStore, sagaStore, outboxStore)
+	orch := orchestrator.New(testDB, subStore, sagaStore, outboxStore, nil)
 	svc := subscription.New(subStore, trackStore, gh, orch, "http://test.local")
 
 	// staticIndexPath="" skips the "/" route (the file is not at a predictable
