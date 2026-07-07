@@ -1,6 +1,6 @@
 # System Design: GitHub Release Notification API
 
-Сервіс, який дозволяє користувачам підписатися на email-сповіщення про нові релізи GitHub-репозиторіїв. Складається з **двох процесів**: модульний моноліт на Go (HTTP API, фоновий сканер релізів, Saga-оркестратор) і окремий мікросервіс-**notifier**, що надсилає email. Спілкуються **асинхронно через RabbitMQ** (HW7 — виніс notifier; HW8 — брокер; HW9 — оркестрована Saga).
+Сервіс, який дозволяє користувачам підписатися на email-сповіщення про нові релізи GitHub-репозиторіїв. Складається з **двох процесів**: модульний моноліт на Go (HTTP API, фоновий сканер релізів, Saga-оркестратор) і окремий мікросервіс-**notifier**, що надсилає email. Спілкуються **асинхронно через RabbitMQ** (HW7 — виніс notifier; HW8 — брокер; HW9 — оркестрована Saga). HW10 додав **опційний синхронний gRPC-транспорт** для кроку підтвердження (broker лишається дефолтом — ADR-011).
 
 > Архітектурні рішення задокументовані в [/system-design/ADR](./ADR). У цьому документі — загальна картина системи: вимоги, навантаження, компоненти, потоки, масштабування.
 
@@ -117,6 +117,7 @@ flowchart LR
     App -->|cache get/set| Redis
     App -->|HTTPS REST| GH
     App -->|publish commands| MQ
+    App -.->|gRPC SendConfirmation<br/>opt-in, sync| Notifier
     MQ -->|consume| Notifier
     Notifier -->|reply sent/failed| MQ
     MQ -->|reply| App
@@ -384,6 +385,18 @@ for {
 - Команду пишемо рядком у `outbox` **тією ж транзакцією**, що й бізнес-дані (крок T1).
 - **Relay** (горутина в моноліті) опитує `outbox WHERE published_at IS NULL`, публікує в RabbitMQ, ставить `published_at`. Порядок publish→mark → at-least-once (consumer дедупить); краш між кроками → republish наступного тіку.
 
+### 4.10 gRPC як опційний синхронний транспорт confirmation (HW10)
+
+Крок «надіслати лист-підтвердження» може йти **синхронно через gRPC** замість async-брокера — обирається конфігом `CONFIRMATION_TRANSPORT` (`broker` за замовчуванням | `grpc`). Це транспортна альтернатива поруч, **не заміна**: async лишається продакшн-дефолтом (ADR-011). gRPC — це синхронний RPC поверх HTTP/2 + Protobuf; додаємо його заради типізованого контракту й порівняння REST-vs-gRPC, а не щоб повертати доставку на sync (це б регресувало розв'язку HW8/HW9).
+
+- **Контракт:** `notifier.v1.NotifierService.SendConfirmation` (unary), опис у `proto/notifier/v1/notifier.proto`, кодоген через `buf` (remote-плагіни), згенерований код у `gen/` закомічено.
+- **Сервер:** notifier піднімає gRPC-сервер на окремому порту (`:50051`) поряд з AMQP-консюмером; хендлер перевикористовує той самий `SMTPSender` + Redis-дедуп.
+- **Клієнт:** оркестратор залежить від інтерфейсу `confirmationSender` (DIP). У grpc-режимі крок T1 пише лише `subscription + saga` (**без outbox-рядка** — інакше relay опублікував би команду й лист пішов би двічі), тоді синхронно кличе notifier і завершує/компенсує сагу **inline** (без async-reply).
+- **Status codes:** `OK` → sent; `InvalidArgument` → порожні поля; `Unavailable` → SMTP впав. Оркестратор компенсує на будь-який не-OK — той самий ефект, що й async-reply `failed`.
+- **API-контракт незмінний:** subscribe повертає той самий результат обома транспортами; збій видно через subscription `status` (не через HTTP-код). Різниця sync — лише в тому, що сага стає термінальною миттєво.
+- **Компроміс:** sync знімає чергу/relay/reply, але прив'язує subscribe до uptime notifier і **не відновлюється sweeper'ом** при краші між T1 і inline-апдейтом (немає outbox-рядка). Тому дефолт — broker.
+- **Порівняння REST vs gRPC** (throughput, latency, байти на дроті) — харнес `cmd/confirmbench` + таблиця в root README. Стисло: на localhost throughput ≈ паритет, gRPC ~2× легший трафік (HPACK + Protobuf) і тісніший p99.
+
 ---
 
 ## 5. Ключові потоки
@@ -424,6 +437,8 @@ sequenceDiagram
 ```
 
 > Шлях збою: notifier не зміг надіслати → reply `failed` → оркестратор компенсує (підписка `failed`); зависла сага → resume-sweeper дотягує.
+
+> gRPC-варіант (opt-in, ADR-011, §4.10): кроки Relay→MQ→N→reply зникають — оркестратор кличе notifier **синхронно** й завершує/компенсує сагу inline; T1 при цьому не пише outbox.
 
 ### 5.2 Scanner cycle (every 5 min)
 
@@ -530,6 +545,7 @@ sequenceDiagram
 | Кеш + дедуп | Redis 7 | TTL з коробки; також idempotency-дедуп у notifier | [005](./ADR/005-redis-caching-for-github-api.md) |
 | Брокер | RabbitMQ 3 | надійна черга задач: ack, DLQ, routing | [009](./ADR/009-message-broker-rabbitmq.md) |
 | Розподілена транзакція | Orchestrated Saga + transactional outbox | консистентність subscribe↔email без 2PC | [010](./ADR/010-orchestrated-saga-for-subscribe.md) |
+| gRPC-транспорт (опційний) | gRPC + Protobuf, контракт через buf | типізований sync-транспорт для confirmation + REST-vs-gRPC порівняння | [011](./ADR/011-grpc-for-confirmation-transport.md) |
 | Email (dev) | Mailpit (SMTP + UI) | локальний fake-inbox | — |
 | Тестування | Go testing + interfaces з моками | Без зовнішніх залежностей у тестах | [006](./ADR/006-context-propagation-through-call-chain.md) |
 | Метрики | Prometheus client_golang | Стандарт індустрії | — |
@@ -545,6 +561,6 @@ sequenceDiagram
 - **Структуроване логування через `slog`** замість stdlib `log` — JSON-output для агрегації в Datadog/Grafana
 - **OpenTelemetry tracing** — використати наявне context propagation, додати spans у GitHub-клієнт і SMTP
 - **Integration-тести з testcontainers** — реальні Postgres + Redis у тестах
-- **gRPC API** як альтернатива REST (бонус задачі)
+- ✅ **gRPC-транспорт для confirmation** (HW10, ADR-011) — реалізовано як opt-in sync-альтернатива з `buf`-контрактом і бенчмарком; далі можна винести й release-нотифікації або дати gRPC для зовнішнього API
 - **Rate limiting per IP** — захист від abuse на subscribe
 - **HTML email templates** — наразі plain text

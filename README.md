@@ -22,6 +22,8 @@ Built with **Go**, **Gin**, **PostgreSQL**, **Redis**, **RabbitMQ**, **Docker**.
 
 8. **Graceful shutdown** — The server listens for OS signals (SIGINT/SIGTERM) and shuts down cleanly: cancels the scanner goroutine via `context.Context`, then gives in-flight HTTP requests 5 seconds to complete. This prevents data corruption and lost requests during Docker stop or deployment.
 
+9. **gRPC as an opt-in synchronous transport (HW10)** — The confirmation-email step can run over gRPC instead of the async broker, selected by `CONFIRMATION_TRANSPORT`. The broker stays the default; gRPC is added *alongside* for a typed schema-first contract and a REST-vs-gRPC comparison, not to replace the async path (which would regress HW8/HW9 decoupling). See [ADR-011](system-design/ADR/011-grpc-for-confirmation-transport.md).
+
 ## Architecture
 
 ```
@@ -284,7 +286,11 @@ curl http://localhost:8080/api/unsubscribe/YOUR-TOKEN-HERE
 
 ```
 ├── main.go                          # Monolith entry: wiring; server + scanner + outbox relay + saga reply-consumer + sweeper
-├── cmd/notifier/                    # Notifier microservice (separate binary): consumer, dedup, SMTP
+├── cmd/notifier/                    # Notifier microservice (separate binary): consumer, dedup, SMTP, gRPC server
+├── cmd/confirmbench/                # REST-vs-gRPC transport benchmark (HW10 ⭐)
+├── proto/notifier/v1/               # gRPC contract (.proto) — buf lint/generate
+├── gen/notifier/v1/                 # generated gRPC/protobuf code (committed)
+├── buf.yaml / buf.gen.yaml          # buf config (remote plugins, no local protoc)
 ├── go.mod / go.sum                  # Dependencies
 ├── Dockerfile / Dockerfile.notifier # Multi-stage builds for the two binaries
 ├── docker-compose.yml               # app + notifier + postgres + redis + rabbitmq + mailpit
@@ -305,7 +311,7 @@ curl http://localhost:8080/api/unsubscribe/YOUR-TOKEN-HERE
 │   ├── cache/  metrics/  logging/   # Redis cache; Prometheus; slog setup
 │   └── integration/                 # integration tests (build tag `integration`, testcontainers)
 ├── e2e/                             # Playwright-go e2e tests (build tag `e2e`)
-└── system-design/                   # system-design doc + ADRs (001–010)
+└── system-design/                   # system-design doc + ADRs (001–011)
 ```
 
 ## Running Tests
@@ -338,6 +344,9 @@ Tests use Go interfaces with mock implementations — no database or network req
 | `REDIS_URL` | No | `redis://redis:6379/0` | Redis URL (GitHub cache + notifier dedup) |
 | `CACHE_TTL_SECONDS` | No | `600` | Cache TTL for GitHub API responses (10 min) |
 | `RABBITMQ_URL` | No | `amqp://guest:guest@rabbitmq:5672/` | RabbitMQ connection URL |
+| `CONFIRMATION_TRANSPORT` | No | `broker` | Confirmation transport: `broker` (async, default) or `grpc` (sync, ADR-011) |
+| `NOTIFIER_GRPC_ADDR` | No | `notifier:50051` | Notifier gRPC address, used when `CONFIRMATION_TRANSPORT=grpc` (monolith) |
+| `NOTIFIER_GRPC_PORT` | No | `50051` | Port the notifier's gRPC server listens on (notifier) |
 | `OUTBOX_POLL_INTERVAL_MS` | No | `1000` | How often the outbox relay polls for unpublished commands |
 | `SAGA_SWEEP_INTERVAL_SECONDS` | No | `60` | How often the resume-sweeper scans for stuck sagas |
 | `SAGA_STALE_AFTER_SECONDS` | No | `120` | How long a saga may sit non-terminal before it's re-driven |
