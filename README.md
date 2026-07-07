@@ -129,6 +129,51 @@ Scanner goroutine wakes up
 **5. List subscriptions** — `GET /api/subscriptions?email={email}`
 - Returns all subscriptions for the given email, each with its `status` (`pending` / `confirmed` / `failed`)
 
+## gRPC vs REST — transport benchmark (HW10 ⭐)
+
+HW10 adds a synchronous **gRPC** transport for the confirmation step alongside the
+default async broker path (see [ADR-011](system-design/ADR/011-grpc-for-confirmation-transport.md)).
+To compare it fairly against **REST** (HTTP/1.1 + JSON), `cmd/confirmbench` drives
+both transports for the *same* `SendConfirmation` operation from **one** Go harness:
+same machine, connection reuse, and a **no-op backend** (no SMTP) so only the
+transport differs. It measures throughput, latency, and **bytes on the wire**.
+
+```bash
+go run ./cmd/confirmbench
+```
+
+Indicative local run (30k requests per cell; numbers are noisy, especially the
+low-end latency percentiles — the Windows timer rounds sub-millisecond values):
+
+| Transport | Conc | req/s | p95 | p99 | req bytes/wire | resp bytes/wire |
+|---|---|---|---|---|---|---|
+| gRPC | 1 | ~4.7k | 0.55 ms | 1.5 ms | **196 B** | **91 B** |
+| REST | 1 | ~7.4k | 1.0 ms | 1.5 ms | 320 B | 120 B |
+| gRPC | 8 | ~13k | 0.74 ms | — | **151 B** | **47 B** |
+| REST | 8 | ~15k | 1.2 ms | 1.7 ms | 320 B | 120 B |
+| gRPC | 64 | ~48k | 2.3 ms | 2.8 ms | **145 B** | **41 B** |
+| REST | 64 | ~51k | 4.0 ms | 5.3 ms | 320 B | 120 B |
+
+Payload size (serialization only): Protobuf **101 B** vs JSON **134 B** (small, 1.33×);
+**195 B** vs **233 B** (large, 1.19×).
+
+**What we got — and why.** On localhost with a tiny message, raw **throughput is
+roughly a wash** (REST even edges ahead: Go's `net/http` with keep-alive is very
+fast, and HTTP/2 framing overhead offsets multiplexing for such small payloads).
+gRPC's real, repeatable wins are:
+
+- **~2× fewer bytes on the wire** (145 B vs 320 B per request), and the gap **grows
+  with concurrency** — HTTP/2 **HPACK** compresses/indexes headers across the one
+  multiplexed connection, while HTTP/1.1 re-sends full plain-text headers every
+  request. Protobuf also drops JSON's repeated key names.
+- **Tighter latency tail** at high concurrency (one multiplexed connection vs an
+  HTTP/1.1 connection pool).
+- A **typed, schema-first contract** (`.proto`) instead of an implicit JSON shape.
+
+So we default to the broker for the production email path (async decoupling from
+HW8/HW9) and keep gRPC as the leaner synchronous option — chosen for its contract,
+wire efficiency, and tail latency, not for peak localhost throughput.
+
 ## Tested and Verified
 
 The full end-to-end flow has been tested with real GitHub repos and Mailtrap:
