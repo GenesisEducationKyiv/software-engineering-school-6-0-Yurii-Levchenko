@@ -56,7 +56,7 @@ jobs:
       # and the CLI speak the same driver protocol, so they MUST match;
       # `@latest` could install a newer CLI and break at runtime.
       - name: Install Playwright CLI (version pinned to go.mod)
-        run: go install github.com/playwright-community/playwright-go/cmd/playwright@$(go list -m -f '{{.Version}}' github.com/playwright-community/playwright-go)
+        run: go install github.com/mxschmitt/playwright-go/cmd/playwright@$(go list -m -f '{{.Version}}' github.com/mxschmitt/playwright-go)
         env:
           GOTOOLCHAIN: auto
 

@@ -1,13 +1,13 @@
 # E2E tests
 
 End-to-end tests that drive a real Chromium browser via
-[playwright-go](https://github.com/playwright-community/playwright-go)
+[playwright-go](https://github.com/mxschmitt/playwright-go)
 against the full application running under docker-compose.
 
 ## One-time setup
 
 ```powershell
-go install github.com/playwright-community/playwright-go/cmd/playwright@latest
+go install github.com/mxschmitt/playwright-go/cmd/playwright@latest
 playwright install --with-deps chromium
 ```
 
