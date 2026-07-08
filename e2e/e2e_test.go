@@ -6,7 +6,7 @@
 //
 // Prerequisites (one-time):
 //
-//	go install github.com/playwright-community/playwright-go/cmd/playwright@latest
+//	go install github.com/mxschmitt/playwright-go/cmd/playwright@latest
 //	playwright install --with-deps chromium
 //
 // Before every run:
@@ -33,7 +33,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
-	"github.com/playwright-community/playwright-go"
+	"github.com/mxschmitt/playwright-go"
 )
 
 var (
