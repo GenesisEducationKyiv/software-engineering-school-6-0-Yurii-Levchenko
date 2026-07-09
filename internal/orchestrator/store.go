@@ -50,8 +50,14 @@ func (s *Store) UpdateState(ctx context.Context, id string, state State, lastErr
 		le = sql.NullString{String: lastErr, Valid: true}
 	}
 	const q = `UPDATE saga SET state = $1, last_error = $2, updated_at = NOW() WHERE id = $3`
-	if _, err := s.db.ExecContext(ctx, q, state, le, id); err != nil {
+	res, err := s.db.ExecContext(ctx, q, state, le, id)
+	if err != nil {
 		return fmt.Errorf("update saga %s state: %w", id, err)
+	}
+	// A state transition that matches no row is a silent lost update (wrong id,
+	// or the saga vanished) — surface it instead of pretending success (review: k1llzers).
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return fmt.Errorf("update saga %s state: no rows updated (saga not found)", id)
 	}
 	return nil
 }
