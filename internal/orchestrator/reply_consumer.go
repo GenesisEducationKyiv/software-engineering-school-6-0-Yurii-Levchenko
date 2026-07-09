@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github-release-notifier/internal/notification"
 
@@ -61,14 +62,36 @@ func (rc *ReplyConsumer) Run(ctx context.Context, url string) error {
 			if !ok {
 				return fmt.Errorf("deliveries channel closed")
 			}
-			if err := rc.HandleReply(ctx, d.Body); err != nil {
-				slog.Error("Saga reply processing failed", "err", err)
+			if err := rc.handleWithRetry(ctx, d.Body); err != nil {
+				slog.Error("Saga reply processing failed after retries, dropping", "err", err)
 				_ = d.Nack(false, false)
 				continue
 			}
 			_ = d.Ack(false)
 		}
 	}
+}
+
+// handleWithRetry retries HandleReply a few times before giving up, so a
+// transient DB blip doesn't drop a reply. HandleReply is idempotent (state-guarded),
+// so retrying is safe (review: k1llzers).
+func (rc *ReplyConsumer) handleWithRetry(ctx context.Context, body []byte) error {
+	const attempts = 3
+	var err error
+	for i := 1; i <= attempts; i++ {
+		if err = rc.HandleReply(ctx, body); err == nil {
+			return nil
+		}
+		if i == attempts {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	return err
 }
 
 func (rc *ReplyConsumer) declareTopology(ch *amqp.Channel) error {
