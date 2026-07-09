@@ -87,9 +87,16 @@ func (s *Store) MarkFailed(ctx context.Context, id int) error {
 // transaction: a fresh token, back to pending and unconfirmed. The orchestrator
 // pairs it with a new saga so a re-subscribe reuses the row (no duplicate).
 func (s *Store) ReactivateInTx(ctx context.Context, ext sqlx.ExtContext, id int, token string) error {
-	const q = `UPDATE subscriptions SET token = $1, confirmed = false, status = $2 WHERE id = $3`
-	if _, err := ext.ExecContext(ctx, q, token, StatusPending, id); err != nil {
+	// Guard on status='failed' so two concurrent re-subscribes can't both revive the
+	// same row and start two sagas: only the first UPDATE matches, the loser affects
+	// 0 rows and errors out (its transaction rolls back). Review: k1llzers.
+	const q = `UPDATE subscriptions SET token = $1, confirmed = false, status = $2 WHERE id = $3 AND status = $4`
+	res, err := ext.ExecContext(ctx, q, token, StatusPending, id, StatusFailed)
+	if err != nil {
 		return fmt.Errorf("reactivate subscription %d: %w", id, err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return fmt.Errorf("reactivate subscription %d: not in failed state (already reactivated?)", id)
 	}
 	return nil
 }
