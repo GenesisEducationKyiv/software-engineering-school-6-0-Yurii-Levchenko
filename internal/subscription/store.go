@@ -71,8 +71,14 @@ func (s *Store) ConfirmSubscription(token string) error {
 // auditable terminal state and a future re-subscribe can reactivate it.
 func (s *Store) MarkFailed(ctx context.Context, id int) error {
 	const q = `UPDATE subscriptions SET status = 'failed' WHERE id = $1`
-	if _, err := s.db.ExecContext(ctx, q, id); err != nil {
+	res, err := s.db.ExecContext(ctx, q, id)
+	if err != nil {
 		return fmt.Errorf("mark subscription %d failed: %w", id, err)
+	}
+	// Compensation must actually hit a row; 0 rows means a wrong/gone id — surface
+	// it instead of a silent no-op (review: k1llzers).
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return fmt.Errorf("mark subscription %d failed: no rows updated", id)
 	}
 	return nil
 }

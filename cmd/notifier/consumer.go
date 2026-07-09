@@ -182,23 +182,28 @@ func (c *Consumer) dispatch(ctx context.Context, rep replier, d amqp.Delivery) e
 			return c.sender.SendConfirmationEmail(req.To, req.ConfirmURL)
 		})
 		// Report the step outcome so the orchestrator can complete or compensate
-		// the saga. Best-effort publish: a lost reply is recovered by the resume
-		// sweeper, so it must not fail the (already attempted) send.
+		// the saga. A lost reply is normally recovered by the resume sweeper, so a
+		// best-effort publish is fine — UNLESS the send ALSO failed (see below).
+		var replyErr error
 		if req.SagaID != "" {
 			status := notification.SagaStatusSent
 			if sendErr != nil {
 				status = notification.SagaStatusFailed
 			}
-			if err := rep.ReplyConfirmation(ctx, req.SagaID, status); err != nil {
-				slog.Warn("Notifier failed to publish saga reply", "saga_id", req.SagaID, "err", err)
+			if replyErr = rep.ReplyConfirmation(ctx, req.SagaID, status); replyErr != nil {
+				slog.Warn("Notifier failed to publish saga reply", "saga_id", req.SagaID, "err", replyErr)
 			}
 		}
 		if sendErr != nil {
-			// For a saga command we already reported "failed" so the orchestrator
-			// can compensate — ack it (return nil) instead of dead-lettering forever.
 			// A non-saga command has no reply path, so surface the error to DLQ it.
 			if req.SagaID == "" {
 				return fmt.Errorf("send confirmation: %w", sendErr)
+			}
+			// Saga command: if we ALSO failed to publish the outcome, the orchestrator
+			// won't learn about it from this delivery — don't silently ack. Return an
+			// error (nack -> DLQ; the sweeper re-drives from the outbox). Review: k1llzers.
+			if replyErr != nil {
+				return fmt.Errorf("send confirmation failed and reply not delivered (saga %s): %w", req.SagaID, sendErr)
 			}
 			slog.Error("Notifier confirmation email failed after retries; reported to saga",
 				"saga_id", req.SagaID, "err", sendErr)
