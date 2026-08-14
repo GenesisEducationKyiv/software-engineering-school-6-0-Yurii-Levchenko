@@ -2,7 +2,7 @@
 
 Сервіс, який дозволяє користувачам підписатися на email-сповіщення про нові релізи GitHub-репозиторіїв. Складається з **двох процесів**: модульний моноліт на Go (HTTP API, фоновий сканер релізів, Saga-оркестратор) і окремий мікросервіс-**notifier**, що надсилає email. Спілкуються **асинхронно через RabbitMQ** (HW7 — виніс notifier; HW8 — брокер; HW9 — оркестрована Saga). HW10 додав **опційний синхронний gRPC-транспорт** для кроку підтвердження (broker лишається дефолтом — ADR-011).
 
-> Архітектурні рішення задокументовані в [/system-design/ADR](./ADR). У цьому документі — загальна картина системи: вимоги, навантаження, компоненти, потоки, масштабування.
+> Архітектурні рішення задокументовані в [/system-design/ADR](./ADR). У цьому документі — загальна картина системи: вимоги, навантаження, компоненти, потоки, масштабування. Пошарова структура + правила залежностей (з тестами) — у [architecture.md](./architecture.md) (HW11).
 
 ---
 
@@ -27,7 +27,7 @@
 - **Запуск:** Запуск системи через `docker-compose up --build` повинен виконуватись не більше 30сек.
 - **Persistent state:** Postgres зберігає підписки і `last_seen_tag` сканера; рестарт app не втрачає даних
 - **Безпека:** опційна API-key автентифікація на `/api/*`; UUID v4 токени (122 біти ентропії — неможливо вгадати); SQL-параметризація через sqlx (anti-injection); `ReadHeaderTimeout: 10s` (anti-Slowloris)
-- **Спостережуваність:** Prometheus `/metrics` з кастомними counters і histograms; логи у stdout (наразі plaintext через stdlib `log`)
+- **Спостережуваність:** структуровані JSON-логи через `log/slog` + access-log middleware `RequestLogger` (`X-Request-ID`); Prometheus скрейпить `/metrics` (кастомні counters/histograms), дашборди в Grafana; логи — Filebeat → Elasticsearch → Kibana (HW6)
 - **Graceful shutdown:** SIGTERM скасовує сканер і дає 5s HTTP-серверу на завершення in-flight запитів
 
 **Цілі (готовність архітектури, не виміряно):**
@@ -37,11 +37,11 @@
 **Відомі gaps (TODO для production):**
 - **Email worker pool:** наразі сканер надсилає листи синхронно в одному циклі. При 1K+ підписників на один популярний реліз цикл блокується на хвилини (1K × ~100ms = ~100s) і пропускає наступний tick. Потрібен пул горутин (10-50 одночасних SMTP-з'єднань) із семафором; це знімає блокування і дає реалістичну пропускну здатність на пікових релізах
 - **At-least-once email delivery:** ✅ реалізовано (HW8/HW9) — transactional outbox + RabbitMQ (manual ack, DLQ) + Redis-дедуп + resume-sweeper. Лишається email worker-pool (вище) для паралелізації відправок
-- **Структуроване логування:** перехід на `slog` або `zap` із JSON-output для агрегації в Datadog/Grafana
+- **Структуроване логування:** ✅ реалізовано (HW6) — JSON через `log/slog` + `RequestLogger` (`X-Request-ID`); шиппинг Filebeat → Elasticsearch → Kibana
 - **HTTPS:** треба reverse proxy (Caddy/nginx) перед app у проді
 - **Distributed lock на сканер:** для multi-instance розгортання (зараз 1 інстанс — race condition неможливий)
-- **Моніторинг і алертинг:** немає (Prometheus метрики експонуються, але нікуди не скрейпляться)
-- **Надсилання на email:** надсилати листи не на Mailtrap а на рельний inbox імейл-провайдера
+- **Алертинг:** немає alert-правил — Prometheus скрейпить `app:8080` і є Grafana-дашборди (HW6), але автоматичних алертів/нотифікацій нема
+- **Надсилання на email:** надсилати листи не на Mailpit а на реальний inbox імейл-провайдера
 
 ### Обмеження
 
@@ -202,12 +202,12 @@ GET    /api/subscriptions?email=..  list active subscriptions
 - `ErrTokenNotFound` → 404
 - інше → 500
 
-**Middleware-стек:** logger → recovery → metrics-collector → optional API-key auth → handler.
+**Middleware-стек:** recovery → RequestLogger (slog) → metrics-collector → optional API-key auth → handler.
 
 Middleware — це функції, які обгортають handler і виконуються до/після нього. Порядок важливий: пройти через увесь стек запит має згори донизу, відповідь — у зворотному напрямку. Наш порядок:
 
-- **logger** (Gin) — записує метод, шлях, статус, тривалість кожного запиту в stdout. Стоїть першим, щоб логувати все, включно з тими запитами, які впадуть далі по стеку
-- **recovery** (Gin) — ловить `panic()` і конвертує в HTTP 500 замість краху всього процесу. Без нього один баг в одному handler-і вбиває весь сервер
+- **recovery** (Gin) — ловить `panic()` і конвертує в HTTP 500 замість краху всього процесу. Стоїть першим, щоб перехопити паніку будь-де далі по стеку
+- **RequestLogger** (власний, `log/slog`) — пише структурований JSON на кожен запит: метод, шлях, статус, тривалість, `X-Request-ID` (бере з заголовка або генерує). Так кожен запит трасується наскрізь
 - **metrics-collector** — записує `http_requests_total` і `http_request_duration_seconds` для Prometheus (див. секцію 4.7)
 - **API-key auth** (опційний, тільки якщо `API_KEY` env-змінна задана) — перевіряє заголовок `X-API-Key`. Якщо ключа немає або він невірний — 401/403, handler не виконується
 - **handler** — фінальна точка, твій бізнес-код
@@ -235,7 +235,7 @@ GetSubscriptions(email) ([]Subscription, error)
 
 **Відповідальність:** усі SQL-запити до БД через `sqlx`.
 
-**Дві таблиці:**
+**Чотири таблиці:**
 
 ```mermaid
 erDiagram
@@ -356,6 +356,7 @@ for {
 - **Reply:** після відправки (або вичерпання спроб) публікує `SagaReply{saga_id, sent|failed}` назад оркестратору.
 - **Два типи листів:** `SendConfirmationEmail` (після підписки) і `SendReleaseNotification` (новий реліз).
 - **Конфіг через env:** `SMTP_*`, `RABBITMQ_URL`, `REDIS_URL`. Dev — Mailpit; прод — SES/SendGrid/Mailgun без зміни коду.
+- **gRPC (HW10):** окрім AMQP-консюмера, notifier піднімає gRPC-сервер для синхронного confirmation-транспорту (опційний) — деталі в §4.10.
 
 ### 4.7 Observability (Prometheus + structured logs)
 
@@ -365,7 +366,7 @@ for {
 - Сканер: `scanner_runs_total`, `releases_detected_total`, `notifications_sent_total`
 - GitHub: `github_api_calls_total{endpoint, cache="hit|miss"}` — пряма видимість ефективності кешу
 
-**Логи:** stdout структурований (через `log` stdlib + Gin debug logger). У продакшні треба переходити на `slog` або `zap` із JSON-output для агрегації.
+**Логи:** структуровані JSON через `log/slog` (default handler у `internal/logging`); на кожен HTTP-запит — access-log через middleware `RequestLogger` з `X-Request-ID`. Шиппинг у Kibana через Filebeat → Elasticsearch (HW6).
 
 ### 4.8 Saga-оркестратор (підписка)
 
@@ -404,6 +405,8 @@ for {
 ### 5.1 Subscribe flow
 
 Підписка — це Saga: синхронна частина (валідація + перевірки + крок T1 однією транзакцією) дає відповідь одразу; відправка листа доробляється асинхронно.
+
+> 🎨 Візуальна (редагована) схема цього потоку — [`saga-flow.excalidraw`](./saga-flow.excalidraw): outbox → relay → RabbitMQ → **notifier-мікросервіс** + saga-reply-петля. Відкрий на [excalidraw.com](https://excalidraw.com) → Open.
 
 ```mermaid
 sequenceDiagram
@@ -558,7 +561,6 @@ sequenceDiagram
 
 - **Email worker-pool у notifier** — паралельні SMTP-відправки замість послідовних (зняти head-of-line blocking)
 - **Distributed lock на сканер** через Redis SETNX або Postgres advisory lock — для multi-instance розгортання
-- **Структуроване логування через `slog`** замість stdlib `log` — JSON-output для агрегації в Datadog/Grafana
 - **OpenTelemetry tracing** — використати наявне context propagation, додати spans у GitHub-клієнт і SMTP
 - **Integration-тести з testcontainers** — реальні Postgres + Redis у тестах
 - ✅ **gRPC-транспорт для confirmation** (HW10, ADR-011) — реалізовано як opt-in sync-альтернатива з `buf`-контрактом і бенчмарком; далі можна винести й release-нотифікації або дати gRPC для зовнішнього API
