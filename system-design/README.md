@@ -360,11 +360,25 @@ for {
 
 ### 4.7 Observability (метрики + структуроване логування)
 
-**Метрики на `/metrics`:**
-- HTTP: `http_requests_total{method,path,status}`, `http_request_duration_seconds`
-- Бізнес: `subscriptions_created_total`, `subscriptions_confirmed_total`, `unsubscribes_total`
-- Сканер: `scanner_runs_total`, `releases_detected_total`, `notifications_sent_total`
-- GitHub: `github_api_calls_total{endpoint, cache="hit|miss"}` — пряма видимість ефективності кешу
+**Метрики за методологією RED (Rate / Errors / Duration) — див. [ADR-008](./ADR/008-red-metrics-prometheus-grafana.md):**
+- **HTTP (RED):** `http_requests_total{method,path,status}` (rate + errors через `status`), `http_request_duration_seconds` (duration, histogram). `path` — шаблон маршруту, не сирий URL (обмежує кардинальність labels).
+- **Scanner (RED-style):** `scanner_runs_total` (rate), `scanner_errors_total{stage}` (errors), `scanner_cycle_duration_seconds` (duration)
+- **Бізнес:** `subscriptions_created_total`, `subscriptions_confirmed_total`, `unsubscribes_total`, `releases_detected_total`, `notifications_sent_total`
+- **GitHub/cache:** `github_api_calls_total{endpoint, cache="hit|miss"}` — пряма видимість ефективності кешу
+
+**Конвеєр метрик** (окремий `docker-compose.observability.yml`):
+
+```mermaid
+flowchart LR
+    App[App container<br/>/metrics endpoint]
+    Prom[Prometheus<br/>scrape кожні 15s]
+    Graf[Grafana<br/>dashboard: RED + cache + scanner]
+
+    Prom -->|pull /metrics| App
+    Graf -->|PromQL| Prom
+```
+
+Prometheus працює за **pull-моделлю**: сам скрейпить `app:8080/metrics` кожні 15s. Grafana підключає Prometheus як datasource (provisioning, as-code) і малює dashboard "Notifier — Overview". App лише експонує `/metrics` — не знає про Prometheus.
 
 **Структуроване логування (slog → Elasticsearch → Kibana)** — див. [ADR-007](./ADR/007-structured-logging-and-log-pipeline.md):
 
@@ -569,7 +583,8 @@ sequenceDiagram
 | gRPC-транспорт (опційний) | gRPC + Protobuf, контракт через buf | типізований sync-транспорт для confirmation + REST-vs-gRPC порівняння | [011](./ADR/011-grpc-for-confirmation-transport.md) |
 | Email (dev) | Mailpit (SMTP + UI) | локальний fake-inbox | — |
 | Тестування | Go testing + interfaces з моками | Без зовнішніх залежностей у тестах | [006](./ADR/006-context-propagation-through-call-chain.md) |
-| Метрики | Prometheus client_golang | Стандарт індустрії | — |
+| Метрики | Prometheus client_golang (RED) | Стандарт індустрії, pull-модель | [008](./ADR/008-red-metrics-prometheus-grafana.md) |
+| Дашборди | Grafana (provisioned) | Візуалізація метрик, datasource as-code | [008](./ADR/008-red-metrics-prometheus-grafana.md) |
 | Логування | `log/slog` (JSON, stdlib) | Структуровано, нуль залежностей | [007](./ADR/007-structured-logging-and-log-pipeline.md) |
 | Конвеєр логів | Filebeat → Elasticsearch → Kibana | Пошук/агрегація логів; app лишається чистим | [007](./ADR/007-structured-logging-and-log-pipeline.md) |
 | Контейнеризація | Docker + docker-compose | Reproducible setup | — |
@@ -582,8 +597,9 @@ sequenceDiagram
 - **Email worker-pool у notifier** — паралельні SMTP-відправки замість послідовних (зняти head-of-line blocking)
 - **Distributed lock на сканер** через Redis SETNX або Postgres advisory lock — для multi-instance розгортання
 - **OpenTelemetry tracing** — використати наявне context propagation, додати spans у GitHub-клієнт і SMTP
-- **RED-метрики + Grafana dashboard** — Prometheus-конвеєр і дашборд ключових метрик (HW6, у роботі)
 - **Проброс `request_id` глибше** — у service/repository логи через `context`, не лише в access-логу
+- **Alerting** — Prometheus Alertmanager / Grafana alerts (напр. "5xx rate > N", "scanner_errors зростає"); зараз метрики лише візуалізуються
+- **ILM на Elasticsearch** — авто-видалення старих лог-індексів (зараз вимкнено заради кастомного імені)
 - **Integration-тести з testcontainers** — реальні Postgres + Redis у тестах
 - ✅ **gRPC-транспорт для confirmation** (HW10, ADR-011) — реалізовано як opt-in sync-альтернатива з `buf`-контрактом і бенчмарком; далі можна винести й release-нотифікації або дати gRPC для зовнішнього API
 - **Rate limiting per IP** — захист від abuse на subscribe
