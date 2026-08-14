@@ -14,3 +14,10 @@ type Subscription struct {
 	Status    string    `db:"status" json:"-"`
 	CreatedAt time.Time `db:"created_at" json:"created_at"`
 }
+
+// Subscription lifecycle statuses (the `status` column).
+const (
+	StatusPending   = "pending"
+	StatusConfirmed = "confirmed"
+	StatusFailed    = "failed"
+)

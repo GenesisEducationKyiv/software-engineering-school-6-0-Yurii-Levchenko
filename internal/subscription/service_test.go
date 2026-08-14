@@ -121,18 +121,33 @@ type sagaCall struct {
 	ConfirmURL string
 }
 
+// reactivateCall records one ReactivateConfirmation invocation.
+type reactivateCall struct {
+	SubID int
+	Email string
+}
+
 // fakeSaga implements sagaStarter. It records calls (and can be made to fail) so
 // unit tests can verify Subscribe hands off correctly without a real DB/broker.
 type fakeSaga struct {
-	calls []sagaCall
-	err   error
+	starts      []sagaCall
+	reactivates []reactivateCall
+	err         error
 }
 
 func (f *fakeSaga) StartConfirmation(_ context.Context, email, repo, token, confirmURL string) error {
 	if f.err != nil {
 		return f.err
 	}
-	f.calls = append(f.calls, sagaCall{Email: email, Repo: repo, Token: token, ConfirmURL: confirmURL})
+	f.starts = append(f.starts, sagaCall{Email: email, Repo: repo, Token: token, ConfirmURL: confirmURL})
+	return nil
+}
+
+func (f *fakeSaga) ReactivateConfirmation(_ context.Context, subID int, email, repo, token, confirmURL string) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.reactivates = append(f.reactivates, reactivateCall{SubID: subID, Email: email})
 	return nil
 }
 
@@ -185,10 +200,10 @@ func TestSubscribe_Success(t *testing.T) {
 	}
 
 	// Subscribe should have started exactly one saga with the right arguments.
-	if len(saga.calls) != 1 {
-		t.Fatalf("saga starts: got %d, want 1", len(saga.calls))
+	if len(saga.starts) != 1 {
+		t.Fatalf("saga starts: got %d, want 1", len(saga.starts))
 	}
-	c := saga.calls[0]
+	c := saga.starts[0]
 	if c.Email != "user@example.com" || c.Repo != "golang/go" {
 		t.Errorf("saga call = %+v, want email/repo user@example.com / golang/go", c)
 	}
@@ -230,15 +245,36 @@ func TestSubscribe_RepoNotFound(t *testing.T) {
 func TestSubscribe_AlreadySubscribed(t *testing.T) {
 	svc, repo, _, _ := setupTestService()
 
-	// Seed an existing subscription directly (creation now lives in the saga,
+	// Seed a confirmed subscription directly (creation now lives in the saga,
 	// so we set up the duplicate state in the store rather than via Subscribe).
 	_ = repo.CreateSubscription(&Subscription{
-		Email: "user@example.com", Repo: "golang/go", Token: "seed-token",
+		Email: "user@example.com", Repo: "golang/go", Token: "seed-token", Status: StatusConfirmed,
 	})
 
 	err := svc.Subscribe(context.Background(), "user@example.com", "golang/go")
 	if !errors.Is(err, ErrAlreadySubscribed) {
 		t.Errorf("Expected ErrAlreadySubscribed, got %v", err)
+	}
+}
+
+func TestSubscribe_ReactivatesFailedSubscription(t *testing.T) {
+	svc, repo, _, saga := setupTestService()
+
+	// A previously failed subscription exists for this (email, repo).
+	_ = repo.CreateSubscription(&Subscription{
+		ID: 7, Email: "user@example.com", Repo: "golang/go", Token: "old", Status: StatusFailed,
+	})
+
+	if err := svc.Subscribe(context.Background(), "user@example.com", "golang/go"); err != nil {
+		t.Fatalf("Subscribe (reactivate) failed: %v", err)
+	}
+
+	// It must reactivate the existing row, not start a brand-new saga.
+	if len(saga.reactivates) != 1 || saga.reactivates[0].SubID != 7 {
+		t.Fatalf("reactivations = %+v, want one for subID 7", saga.reactivates)
+	}
+	if len(saga.starts) != 0 {
+		t.Errorf("must not StartConfirmation when a failed subscription exists, got %d", len(saga.starts))
 	}
 }
 
