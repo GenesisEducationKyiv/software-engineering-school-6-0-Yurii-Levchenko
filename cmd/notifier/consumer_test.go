@@ -42,6 +42,20 @@ func (f *fakeDedup) MarkProcessed(_ context.Context, id string) error {
 	return nil
 }
 
+// fakeReplier records the saga ids the consumer replied for.
+type fakeReplier struct {
+	replied []string
+	err     error
+}
+
+func (f *fakeReplier) ReplyConfirmation(_ context.Context, sagaID string) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.replied = append(f.replied, sagaID)
+	return nil
+}
+
 func delivery(key string, payload any) amqp.Delivery {
 	body, _ := json.Marshal(payload)
 	return amqp.Delivery{RoutingKey: key, Body: body}
@@ -51,7 +65,7 @@ func TestHandle_Confirmation_Sends(t *testing.T) {
 	f := &fakeSender{}
 	c := NewConsumer(f, &fakeDedup{})
 
-	err := c.handle(context.Background(), delivery(notification.RoutingConfirm,
+	err := c.handle(context.Background(), &fakeReplier{}, delivery(notification.RoutingConfirm,
 		notification.ConfirmationRequest{To: "a@b.com", ConfirmURL: "http://x/confirm/t"}))
 
 	if err != nil {
@@ -62,11 +76,46 @@ func TestHandle_Confirmation_Sends(t *testing.T) {
 	}
 }
 
-func TestHandle_Release_Sends(t *testing.T) {
+func TestHandle_Confirmation_WithSagaID_Replies(t *testing.T) {
 	f := &fakeSender{}
+	rep := &fakeReplier{}
 	c := NewConsumer(f, &fakeDedup{})
 
-	err := c.handle(context.Background(), delivery(notification.RoutingRelease,
+	err := c.handle(context.Background(), rep, delivery(notification.RoutingConfirm,
+		notification.ConfirmationRequest{SagaID: "saga-1", To: "a@b.com", ConfirmURL: "http://x/confirm/t"}))
+
+	if err != nil {
+		t.Fatalf("handle returned error: %v", err)
+	}
+	if len(f.confirm) != 1 {
+		t.Fatalf("confirm sends = %d, want 1", len(f.confirm))
+	}
+	if len(rep.replied) != 1 || rep.replied[0] != "saga-1" {
+		t.Errorf("replied = %v, want [saga-1]", rep.replied)
+	}
+}
+
+func TestHandle_Confirmation_NoSagaID_DoesNotReply(t *testing.T) {
+	rep := &fakeReplier{}
+	c := NewConsumer(&fakeSender{}, &fakeDedup{})
+
+	err := c.handle(context.Background(), rep, delivery(notification.RoutingConfirm,
+		notification.ConfirmationRequest{To: "a@b.com", ConfirmURL: "http://x/confirm/t"}))
+
+	if err != nil {
+		t.Fatalf("handle returned error: %v", err)
+	}
+	if len(rep.replied) != 0 {
+		t.Errorf("replied = %v, want none (no saga id in the command)", rep.replied)
+	}
+}
+
+func TestHandle_Release_Sends(t *testing.T) {
+	f := &fakeSender{}
+	rep := &fakeReplier{}
+	c := NewConsumer(f, &fakeDedup{})
+
+	err := c.handle(context.Background(), rep, delivery(notification.RoutingRelease,
 		notification.ReleaseRequest{To: "a@b.com", Repo: "golang/go", Tag: "v1.22.0", UnsubscribeURL: "http://x/unsub/t"}))
 
 	if err != nil {
@@ -75,19 +124,22 @@ func TestHandle_Release_Sends(t *testing.T) {
 	if len(f.release) != 1 || f.release[0].Tag != "v1.22.0" {
 		t.Errorf("release sends = %+v, want one with tag v1.22.0", f.release)
 	}
+	if len(rep.replied) != 0 {
+		t.Errorf("release must not reply to the saga, got %v", rep.replied)
+	}
 }
 
 func TestHandle_BadJSON_ReturnsError(t *testing.T) {
 	c := NewConsumer(&fakeSender{}, &fakeDedup{})
 	d := amqp.Delivery{RoutingKey: notification.RoutingConfirm, Body: []byte("not json")}
-	if err := c.handle(context.Background(), d); err == nil {
+	if err := c.handle(context.Background(), &fakeReplier{}, d); err == nil {
 		t.Fatal("want error for bad JSON (so the message dead-letters, not acked)")
 	}
 }
 
 func TestHandle_UnknownRoutingKey_ReturnsError(t *testing.T) {
 	c := NewConsumer(&fakeSender{}, &fakeDedup{})
-	if err := c.handle(context.Background(), amqp.Delivery{RoutingKey: "mystery", Body: []byte("{}")}); err == nil {
+	if err := c.handle(context.Background(), &fakeReplier{}, amqp.Delivery{RoutingKey: "mystery", Body: []byte("{}")}); err == nil {
 		t.Fatal("want error for unknown routing key")
 	}
 }
@@ -96,7 +148,7 @@ func TestHandle_SendFails_ReturnsError(t *testing.T) {
 	f := &fakeSender{err: errors.New("smtp down")}
 	c := NewConsumer(f, &fakeDedup{})
 
-	err := c.handle(context.Background(), delivery(notification.RoutingConfirm,
+	err := c.handle(context.Background(), &fakeReplier{}, delivery(notification.RoutingConfirm,
 		notification.ConfirmationRequest{To: "a@b.com", ConfirmURL: "http://x/c/t"}))
 
 	if err == nil {
@@ -111,7 +163,7 @@ func TestHandle_Duplicate_Skips(t *testing.T) {
 	body, _ := json.Marshal(notification.ConfirmationRequest{To: "a@b.com", ConfirmURL: "http://x/c/t"})
 	d := amqp.Delivery{RoutingKey: notification.RoutingConfirm, MessageId: "confirm:t", Body: body}
 
-	if err := c.handle(context.Background(), d); err != nil {
+	if err := c.handle(context.Background(), &fakeReplier{}, d); err != nil {
 		t.Fatalf("handle returned error: %v", err)
 	}
 	if len(f.confirm) != 0 {
@@ -127,7 +179,7 @@ func TestHandle_FirstTime_MarksAfterSend(t *testing.T) {
 	body, _ := json.Marshal(notification.ConfirmationRequest{To: "a@b.com", ConfirmURL: "http://x/c/t"})
 	d := amqp.Delivery{RoutingKey: notification.RoutingConfirm, MessageId: "confirm:t", Body: body}
 
-	if err := c.handle(context.Background(), d); err != nil {
+	if err := c.handle(context.Background(), &fakeReplier{}, d); err != nil {
 		t.Fatalf("handle returned error: %v", err)
 	}
 	if len(f.confirm) != 1 {

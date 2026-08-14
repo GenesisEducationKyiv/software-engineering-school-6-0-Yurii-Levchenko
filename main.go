@@ -120,6 +120,25 @@ func run() error {
 	releaseScanner := releasetracking.New(svc, trackStore, scannerGH, emailNotifier, cfg.ScanIntervalSecs, cfg.BaseURL)
 	go releaseScanner.Start(ctx)
 
+	// --- Start the saga reply consumer FIRST ---
+	// It declares the saga.replies queue on connect; starting it before the relay
+	// narrows the startup window where an early reply could be published to a
+	// not-yet-declared queue and dropped on a fresh broker (review: k1llzers).
+	// Reconnect loop keeps a RabbitMQ blip from taking down the HTTP server.
+	replyConsumer := orchestrator.NewReplyConsumer(sagaStore)
+	go func() {
+		for {
+			if err := replyConsumer.Run(ctx, cfg.RabbitMQURL); err != nil {
+				slog.Error("Saga reply consumer stopped, retrying", "err", err)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(5 * time.Second):
+			}
+		}
+	}()
+
 	// --- Start the transactional-outbox relay ---
 	// Publishes notification commands written to the outbox table to RabbitMQ.
 	// Idle until the orchestrator (HW9) starts writing rows; shares ctx with the

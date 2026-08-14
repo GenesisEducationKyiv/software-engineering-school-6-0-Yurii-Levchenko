@@ -12,9 +12,10 @@ import (
 )
 
 const (
-	ExchangeName   = "notifications"
-	RoutingConfirm = "confirmation"
-	RoutingRelease = "release"
+	ExchangeName     = "notifications"
+	RoutingConfirm   = "confirmation"
+	RoutingRelease   = "release"
+	RoutingSagaReply = "saga.reply"
 )
 
 // amqpPublisher is the slice of *amqp.Channel the publisher needs; an interface

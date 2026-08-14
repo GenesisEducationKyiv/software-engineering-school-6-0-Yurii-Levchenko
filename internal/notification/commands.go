@@ -17,3 +17,16 @@ type ReleaseRequest struct {
 	Tag            string `json:"tag"`
 	UnsubscribeURL string `json:"unsubscribe_url"`
 }
+
+// SagaReply is the notifier's reply to the orchestrator reporting the outcome of
+// a saga step (currently the confirmation-email send). The orchestrator consumes
+// it to advance the saga's state.
+type SagaReply struct {
+	SagaID string `json:"saga_id"`
+	Status string `json:"status"`
+}
+
+const (
+	// SagaStatusSent means the saga's email step completed successfully.
+	SagaStatusSent = "sent"
+)
