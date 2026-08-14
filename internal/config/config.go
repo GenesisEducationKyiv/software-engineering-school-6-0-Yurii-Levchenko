@@ -23,8 +23,14 @@ type Config struct {
 	// SagaStaleAfterSecs is how long a saga may sit in a non-terminal state
 	// before the sweeper treats it as stuck and re-drives it.
 	SagaStaleAfterSecs int
-	APIKey             string
-	LogLevel           string
+	// ConfirmationTransport selects how the subscribe saga sends the confirmation
+	// email: "broker" (default, async via RabbitMQ) or "grpc" (sync, ADR-011).
+	ConfirmationTransport string
+	// NotifierGRPCAddr is the notifier's gRPC address, used when
+	// ConfirmationTransport=grpc.
+	NotifierGRPCAddr string
+	APIKey           string
+	LogLevel         string
 }
 
 // Load reads all config from environment variables with sensible defaults
@@ -41,6 +47,8 @@ func Load() *Config {
 		OutboxPollIntervalMs:  getEnvInt("OUTBOX_POLL_INTERVAL_MS", 1000),
 		SagaSweepIntervalSecs: getEnvInt("SAGA_SWEEP_INTERVAL_SECONDS", 60),
 		SagaStaleAfterSecs:    getEnvInt("SAGA_STALE_AFTER_SECONDS", 120),
+		ConfirmationTransport: getEnv("CONFIRMATION_TRANSPORT", "broker"),
+		NotifierGRPCAddr:      getEnv("NOTIFIER_GRPC_ADDR", "notifier:50051"),
 		APIKey:                getEnv("API_KEY", ""),
 		LogLevel:              getEnv("LOG_LEVEL", "info"),
 	}

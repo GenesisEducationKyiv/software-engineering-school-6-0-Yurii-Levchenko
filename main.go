@@ -28,6 +28,8 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 func main() {
@@ -109,7 +111,28 @@ func run() error {
 	// the subscription, the saga record, and the outbox command in one transaction.
 	outboxStore := outbox.NewStore(db)
 	sagaStore := orchestrator.NewStore(db)
-	orch := orchestrator.New(db, subStore, sagaStore, outboxStore)
+
+	// Confirmation transport (ADR-011): "broker" (default, async outbox → RabbitMQ)
+	// or "grpc" (synchronous call to the notifier). We pass a real sender only in
+	// grpc mode; broker mode passes a literal nil so the orchestrator's interface
+	// is a true nil — passing a typed nil (*GRPCConfirmationSender)(nil) would make
+	// the interface non-nil and trigger a nil-pointer call (a classic Go trap).
+	var orch *orchestrator.Orchestrator
+	switch cfg.ConfirmationTransport {
+	case "grpc":
+		conn, err := grpc.NewClient(cfg.NotifierGRPCAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			return fmt.Errorf("dial notifier grpc: %w", err)
+		}
+		defer conn.Close()
+		orch = orchestrator.New(db, subStore, sagaStore, outboxStore, notification.NewGRPCConfirmationSender(conn, 10*time.Second))
+		slog.Info("Confirmation transport", "mode", "grpc", "addr", cfg.NotifierGRPCAddr)
+	case "broker":
+		orch = orchestrator.New(db, subStore, sagaStore, outboxStore, nil)
+		slog.Info("Confirmation transport", "mode", "broker")
+	default:
+		return fmt.Errorf("unknown CONFIRMATION_TRANSPORT %q (want broker or grpc)", cfg.ConfirmationTransport)
+	}
 
 	svc := subscription.New(subStore, trackStore, ghService, orch, cfg.BaseURL)
 

@@ -18,6 +18,7 @@ func newOrchestrator() *orchestrator.Orchestrator {
 		subscription.NewStore(testDB),
 		orchestrator.NewStore(testDB),
 		outbox.NewStore(testDB),
+		nil, // broker transport (async outbox path)
 	)
 }
 
