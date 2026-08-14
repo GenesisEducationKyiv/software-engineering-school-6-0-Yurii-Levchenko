@@ -17,6 +17,7 @@ import (
 	"github-release-notifier/internal/githubgateway"
 	"github-release-notifier/internal/logging"
 	"github-release-notifier/internal/notification"
+	"github-release-notifier/internal/orchestrator"
 	"github-release-notifier/internal/outbox"
 	"github-release-notifier/internal/releasetracking"
 	"github-release-notifier/internal/subscription"
@@ -103,7 +104,14 @@ func run() error {
 		return fmt.Errorf("connect to broker: %w", err)
 	}
 	defer emailNotifier.Close()
-	svc := subscription.New(subStore, trackStore, ghService, emailNotifier, cfg.BaseURL)
+
+	// Saga orchestrator: Subscribe runs as a transactional saga — step T1 writes
+	// the subscription, the saga record, and the outbox command in one transaction.
+	outboxStore := outbox.NewStore(db)
+	sagaStore := orchestrator.NewStore(db)
+	orch := orchestrator.New(db, subStore, sagaStore, outboxStore)
+
+	svc := subscription.New(subStore, trackStore, ghService, orch, cfg.BaseURL)
 
 	// --- Start Background Scanner with context for graceful shutdown ---
 	ctx, cancel := context.WithCancel(context.Background())
@@ -117,7 +125,7 @@ func run() error {
 	// Idle until the orchestrator (HW9) starts writing rows; shares ctx with the
 	// scanner so it stops on graceful shutdown.
 	outboxRelay := outbox.NewRelay(
-		outbox.NewStore(db),
+		outboxStore,
 		emailNotifier,
 		time.Duration(cfg.OutboxPollIntervalMs)*time.Millisecond,
 	)

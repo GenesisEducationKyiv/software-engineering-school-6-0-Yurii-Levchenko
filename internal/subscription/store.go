@@ -1,6 +1,7 @@
 package subscription
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 
@@ -22,6 +23,20 @@ func (s *Store) CreateSubscription(sub *Subscription) error {
 	          VALUES ($1, $2, $3, $4)`
 	_, err := s.db.Exec(query, sub.Email, sub.Repo, sub.Token, sub.Confirmed)
 	return err
+}
+
+// CreateInTx inserts a pending subscription within the given transaction and
+// returns its new id. The saga orchestrator uses it so the subscription, saga,
+// and outbox rows all commit atomically (step T1). ext is a *sqlx.Tx in
+// production; *sqlx.DB also satisfies it.
+func (s *Store) CreateInTx(ctx context.Context, ext sqlx.ExtContext, email, repo, token string) (int, error) {
+	const q = `INSERT INTO subscriptions (email, repo, token, confirmed)
+	           VALUES ($1, $2, $3, false) RETURNING id`
+	var id int
+	if err := ext.QueryRowxContext(ctx, q, email, repo, token).Scan(&id); err != nil {
+		return 0, err
+	}
+	return id, nil
 }
 
 func (s *Store) GetSubscriptionByToken(token string) (*Subscription, error) {

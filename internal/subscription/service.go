@@ -37,30 +37,33 @@ type GitHubClient interface {
 	CheckRepoExists(ctx context.Context, owner, repo string) (bool, error)
 }
 
-// EmailNotifier defines the interface for sending emails
-type EmailNotifier interface {
-	SendConfirmationEmail(to, confirmURL string) error
+// sagaStarter begins the subscribe saga: it transactionally creates the pending
+// subscription and enqueues the confirmation-email command. Implemented by the
+// orchestrator. The service depends on this interface (not the orchestrator
+// concretely) so the domain layer stays free of transaction/outbox details.
+type sagaStarter interface {
+	StartConfirmation(ctx context.Context, email, repo, token, confirmURL string) error
 }
 
 // Service contains all business logic for the subscription system
 // validation, orchestration, and rules live in this layer
 // Handlers call Service methods; Service calls Repository and external clients
 type Service struct {
-	subs     SubscriptionStore
-	tracker  RepoTracker
-	github   GitHubClient
-	notifier EmailNotifier
-	baseURL  string
+	subs    SubscriptionStore
+	tracker RepoTracker
+	github  GitHubClient
+	saga    sagaStarter
+	baseURL string
 }
 
 // creates a new Service
-func New(subs SubscriptionStore, tracker RepoTracker, github GitHubClient, notifier EmailNotifier, baseURL string) *Service {
+func New(subs SubscriptionStore, tracker RepoTracker, github GitHubClient, saga sagaStarter, baseURL string) *Service {
 	return &Service{
-		subs:     subs,
-		tracker:  tracker,
-		github:   github,
-		notifier: notifier,
-		baseURL:  baseURL,
+		subs:    subs,
+		tracker: tracker,
+		github:  github,
+		saga:    saga,
+		baseURL: baseURL,
 	}
 }
 
@@ -109,23 +112,13 @@ func (s *Service) Subscribe(ctx context.Context, email, repoStr string) error {
 		return ErrAlreadySubscribed
 	}
 
-	// 5. Create subscription with a unique token
+	// 5. Start the subscribe saga: step T1 transactionally creates the pending
+	// subscription, records the saga, and enqueues the confirmation-email command
+	// to the outbox (the relay publishes it). See ADR-010.
 	token := uuid.New().String()
-	sub := &Subscription{
-		Email:     email,
-		Repo:      repoStr,
-		Token:     token,
-		Confirmed: false,
-	}
-
-	if err := s.subs.CreateSubscription(sub); err != nil {
-		return fmt.Errorf("failed to create subscription: %w", err)
-	}
-
-	// 6. Send confirmation email
 	confirmURL := fmt.Sprintf("%s/api/confirm/%s", s.baseURL, token)
-	if err := s.notifier.SendConfirmationEmail(email, confirmURL); err != nil {
-		return fmt.Errorf("failed to send confirmation email: %w", err)
+	if err := s.saga.StartConfirmation(ctx, email, repoStr, token, confirmURL); err != nil {
+		return fmt.Errorf("failed to start subscription saga: %w", err)
 	}
 
 	return nil

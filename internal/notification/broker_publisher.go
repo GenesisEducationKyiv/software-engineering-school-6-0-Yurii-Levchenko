@@ -59,11 +59,6 @@ func (p *BrokerPublisher) Close() error {
 	return nil
 }
 
-func (p *BrokerPublisher) SendConfirmationEmail(to, confirmURL string) error {
-	return p.publish(RoutingConfirm, "confirm:"+path.Base(confirmURL),
-		ConfirmationRequest{To: to, ConfirmURL: confirmURL})
-}
-
 func (p *BrokerPublisher) SendReleaseNotification(to, repo, tag, unsubscribeURL string) error {
 	id := fmt.Sprintf("release:%s:%s:%s", repo, tag, path.Base(unsubscribeURL))
 	return p.publish(RoutingRelease, id,
