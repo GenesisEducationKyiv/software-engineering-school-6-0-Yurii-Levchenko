@@ -18,24 +18,31 @@ type Config struct {
 	// OutboxPollIntervalMs is how often the transactional-outbox relay polls
 	// the outbox table for unpublished messages (milliseconds).
 	OutboxPollIntervalMs int
-	APIKey               string
-	LogLevel             string
+	// SagaSweepIntervalSecs is how often the resume-sweeper scans for stuck sagas.
+	SagaSweepIntervalSecs int
+	// SagaStaleAfterSecs is how long a saga may sit in a non-terminal state
+	// before the sweeper treats it as stuck and re-drives it.
+	SagaStaleAfterSecs int
+	APIKey             string
+	LogLevel           string
 }
 
 // Load reads all config from environment variables with sensible defaults
 func Load() *Config {
 	return &Config{
-		DatabaseURL:          getEnv("DATABASE_URL", "postgres://postgres:postgres@db:5432/notifier?sslmode=disable"),
-		AppPort:              getEnv("APP_PORT", "8080"),
-		BaseURL:              getEnv("BASE_URL", "http://localhost:8080"),
-		RabbitMQURL:          getEnv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"),
-		GitHubToken:          getEnv("GITHUB_TOKEN", ""),
-		ScanIntervalSecs:     getEnvInt("SCAN_INTERVAL_SECONDS", 600),
-		RedisURL:             getEnv("REDIS_URL", "redis://localhost:6379/0"),
-		CacheTTLSeconds:      getEnvInt("CACHE_TTL_SECONDS", 600),
-		OutboxPollIntervalMs: getEnvInt("OUTBOX_POLL_INTERVAL_MS", 1000),
-		APIKey:               getEnv("API_KEY", ""),
-		LogLevel:             getEnv("LOG_LEVEL", "info"),
+		DatabaseURL:           getEnv("DATABASE_URL", "postgres://postgres:postgres@db:5432/notifier?sslmode=disable"),
+		AppPort:               getEnv("APP_PORT", "8080"),
+		BaseURL:               getEnv("BASE_URL", "http://localhost:8080"),
+		RabbitMQURL:           getEnv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"),
+		GitHubToken:           getEnv("GITHUB_TOKEN", ""),
+		ScanIntervalSecs:      getEnvInt("SCAN_INTERVAL_SECONDS", 600),
+		RedisURL:              getEnv("REDIS_URL", "redis://localhost:6379/0"),
+		CacheTTLSeconds:       getEnvInt("CACHE_TTL_SECONDS", 600),
+		OutboxPollIntervalMs:  getEnvInt("OUTBOX_POLL_INTERVAL_MS", 1000),
+		SagaSweepIntervalSecs: getEnvInt("SAGA_SWEEP_INTERVAL_SECONDS", 60),
+		SagaStaleAfterSecs:    getEnvInt("SAGA_STALE_AFTER_SECONDS", 120),
+		APIKey:                getEnv("API_KEY", ""),
+		LogLevel:              getEnv("LOG_LEVEL", "info"),
 	}
 }
 

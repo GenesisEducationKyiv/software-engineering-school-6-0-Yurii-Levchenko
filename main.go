@@ -150,6 +150,16 @@ func run() error {
 	)
 	go outboxRelay.Run(ctx)
 
+	// --- Start the saga resume-sweeper ---
+	// Recovers sagas left stuck by a crash or a lost message: re-drives those
+	// still waiting and finishes interrupted compensations.
+	sweeper := orchestrator.NewSweeper(
+		sagaStore, subStore, outboxStore,
+		time.Duration(cfg.SagaSweepIntervalSecs)*time.Second,
+		time.Duration(cfg.SagaStaleAfterSecs)*time.Second,
+	)
+	go sweeper.Run(ctx)
+
 	// --- Setup Router ---
 	// Router wiring lives in internal/app so that integration tests can
 	// build the same router without spinning up main().

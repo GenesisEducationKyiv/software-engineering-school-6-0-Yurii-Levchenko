@@ -82,3 +82,14 @@ func (s *Store) MarkPublished(ctx context.Context, id int64) error {
 	}
 	return nil
 }
+
+// Requeue resets a saga's outbox messages back to unpublished so the relay
+// re-publishes them. Used by the resume-sweeper to re-drive a stuck saga; the
+// consumer dedups on MessageId, so a re-publish does not send a duplicate email.
+func (s *Store) Requeue(ctx context.Context, sagaID string) error {
+	const q = `UPDATE outbox SET published_at = NULL WHERE saga_id = $1`
+	if _, err := s.db.ExecContext(ctx, q, sagaID); err != nil {
+		return fmt.Errorf("requeue outbox for saga %s: %w", sagaID, err)
+	}
+	return nil
+}

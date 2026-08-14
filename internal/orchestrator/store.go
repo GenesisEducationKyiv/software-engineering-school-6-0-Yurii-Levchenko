@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 )
@@ -60,4 +61,19 @@ func (s *Store) UpdateState(ctx context.Context, id string, state State, lastErr
 		return fmt.Errorf("update saga %s state: no rows updated (saga not found)", id)
 	}
 	return nil
+}
+
+// FindResumable returns sagas stuck in a non-terminal state whose last update is
+// older than `before` — candidates for the resume-sweeper to re-drive or finish
+// compensating.
+func (s *Store) FindResumable(ctx context.Context, before time.Time) ([]Saga, error) {
+	const q = `SELECT * FROM saga
+	           WHERE state IN ($1, $2) AND updated_at < $3
+	           ORDER BY updated_at
+	           LIMIT 100`
+	var sagas []Saga
+	if err := s.db.SelectContext(ctx, &sagas, q, StateSubscriptionCreated, StateCompensating, before); err != nil {
+		return nil, fmt.Errorf("find resumable sagas: %w", err)
+	}
+	return sagas, nil
 }
