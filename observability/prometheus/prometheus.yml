@@ -1,0 +1,24 @@
+# Prometheus scrape configuration.
+#
+# Prometheus uses a PULL model: it periodically scrapes (HTTP GET) the
+# /metrics endpoint of each target. The app exposes Prometheus-format
+# metrics there via prometheus/client_golang; Prometheus stores them as
+# time series for querying (PromQL) and graphing (Grafana).
+
+global:
+  scrape_interval: 15s        # how often to pull /metrics from each target
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # The notifier app. `app` is the container hostname on the shared
+  # docker-compose network; metrics are served on :8080/metrics.
+  - job_name: "notifier-app"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["app:8080"]
+
+  # Prometheus scraping itself — handy to confirm Prometheus is alive.
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]

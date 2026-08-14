@@ -59,5 +59,18 @@ services:
       elasticsearch:
         condition: service_healthy
 
+  # Prometheus: pulls /metrics from the app every 15s and stores them as
+  # time series. The "metrics export pipeline" for the RED metrics.
+  # UI + PromQL at http://localhost:9090.
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: notifier-prometheus
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    ports:
+      - "9090:9090"
+
 volumes:
   esdata:
+  promdata:
