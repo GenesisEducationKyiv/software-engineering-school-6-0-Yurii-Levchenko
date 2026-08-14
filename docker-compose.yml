@@ -59,6 +59,12 @@ services:
       mailpit:
         condition: service_started
     restart: on-failure
+    # Explicit opt-in for log collection. Filebeat ships only containers
+    # carrying this label (see observability/filebeat/filebeat.yml). Using a
+    # label — not the container/image name — keeps the filter intentional and
+    # stable: it survives project renames and works with multiple replicas.
+    labels:
+      logging: "notifier"
 
 volumes:
   pgdata:
