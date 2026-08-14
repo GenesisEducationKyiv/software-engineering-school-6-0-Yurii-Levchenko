@@ -14,12 +14,11 @@ import (
 	"github-release-notifier/internal/app"
 	"github-release-notifier/internal/cache"
 	"github-release-notifier/internal/config"
-	"github-release-notifier/internal/github"
+	"github-release-notifier/internal/githubgateway"
 	"github-release-notifier/internal/logging"
-	"github-release-notifier/internal/notifier"
-	"github-release-notifier/internal/repository"
-	"github-release-notifier/internal/scanner"
-	"github-release-notifier/internal/service"
+	"github-release-notifier/internal/notification"
+	"github-release-notifier/internal/releasetracking"
+	"github-release-notifier/internal/subscription"
 
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
@@ -80,14 +79,15 @@ func run() error {
 	}
 
 	// --- Initialize Dependencies ---
-	repo := repository.New(db)
-	ghClient := github.New(cfg.GitHubToken)
+	trackStore := releasetracking.NewStore(db)
+	subStore := subscription.NewStore(db)
+	ghClient := githubgateway.New(cfg.GitHubToken)
 
 	// wrap GitHub client with Redis cache if available
-	var ghService service.GitHubClient
-	var scannerGH scanner.ReleaseChecker
+	var ghService subscription.GitHubClient
+	var scannerGH releasetracking.ReleaseChecker
 	if redisCache != nil {
-		cachedGH := github.NewCachedClient(ghClient, redisCache)
+		cachedGH := githubgateway.NewCachedClient(ghClient, redisCache)
 		ghService = cachedGH
 		scannerGH = cachedGH
 	} else {
@@ -95,14 +95,14 @@ func run() error {
 		scannerGH = ghClient
 	}
 
-	emailNotifier := notifier.New(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUser, cfg.SMTPPass, cfg.SMTPFrom)
-	svc := service.New(repo, repo, ghService, emailNotifier, cfg.BaseURL)
+	emailNotifier := notification.NewSMTPSender(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUser, cfg.SMTPPass, cfg.SMTPFrom)
+	svc := subscription.New(subStore, trackStore, ghService, emailNotifier, cfg.BaseURL)
 
 	// --- Start Background Scanner with context for graceful shutdown ---
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	releaseScanner := scanner.New(repo, repo, scannerGH, emailNotifier, cfg.ScanIntervalSecs, cfg.BaseURL)
+	releaseScanner := releasetracking.New(svc, trackStore, scannerGH, emailNotifier, cfg.ScanIntervalSecs, cfg.BaseURL)
 	go releaseScanner.Start(ctx)
 
 	// --- Setup Router ---

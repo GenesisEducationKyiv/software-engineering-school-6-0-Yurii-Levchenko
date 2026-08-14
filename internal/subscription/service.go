@@ -1,9 +1,9 @@
-package service
+package subscription
 
 import (
 	"context"
 	"fmt"
-	"github-release-notifier/internal/model"
+	"github-release-notifier/internal/repospec"
 	"regexp"
 
 	"github.com/google/uuid"
@@ -14,12 +14,14 @@ import (
 // We split this from a previous fat RepositoryStore interface (ISP):
 // each consumer now depends only on the methods it actually calls
 type SubscriptionStore interface {
-	CreateSubscription(sub *model.Subscription) error
-	GetSubscriptionByToken(token string) (*model.Subscription, error)
-	GetSubscriptionByEmailAndRepo(email, repo string) (*model.Subscription, error)
+	CreateSubscription(sub *Subscription) error
+	GetSubscriptionByToken(token string) (*Subscription, error)
+	GetSubscriptionByEmailAndRepo(email, repo string) (*Subscription, error)
 	ConfirmSubscription(token string) error
 	DeleteSubscription(token string) error
-	GetActiveSubscriptionsByEmail(email string) ([]model.Subscription, error)
+	GetActiveSubscriptionsByEmail(email string) ([]Subscription, error)
+	GetActiveRepos() ([]string, error)
+	GetSubscribersByRepo(repo string) ([]Subscription, error)
 }
 
 // RepoTracker is the minimum interface service needs from the tracking
@@ -80,7 +82,7 @@ func (s *Service) Subscribe(ctx context.Context, email, repoStr string) error {
 	}
 
 	// 2. Validate repo format
-	spec, err := model.ParseRepoSpec(repoStr)
+	spec, err := repospec.ParseRepoSpec(repoStr)
 	if err != nil {
 		// Translate the model-layer parsing error into the service domain
 		// sentinel, preserving the original cause via %w for logs/debug
@@ -109,7 +111,7 @@ func (s *Service) Subscribe(ctx context.Context, email, repoStr string) error {
 
 	// 5. Create subscription with a unique token
 	token := uuid.New().String()
-	sub := &model.Subscription{
+	sub := &Subscription{
 		Email:     email,
 		Repo:      repoStr,
 		Token:     token,
@@ -170,9 +172,30 @@ func (s *Service) Unsubscribe(token string) error {
 }
 
 // returns all active subscriptions for email. basically runs SQL query
-func (s *Service) GetSubscriptions(email string) ([]model.Subscription, error) {
+func (s *Service) GetSubscriptions(email string) ([]Subscription, error) {
 	if !ValidateEmail(email) {
 		return nil, ErrInvalidEmail
 	}
 	return s.subs.GetActiveSubscriptionsByEmail(email)
+}
+
+// ActiveRepos returns every repo that has at least one confirmed subscription.
+// Part of the subscription facade — the release scanner reads it cross-domain
+// instead of querying the subscriptions table itself.
+func (s *Service) ActiveRepos() ([]string, error) {
+	return s.subs.GetActiveRepos()
+}
+
+// SubscribersForRepo returns confirmed subscribers of a repo as slim Subscriber
+// DTOs (the ACL): the full Subscription entity never leaves this domain.
+func (s *Service) SubscribersForRepo(repo string) ([]Subscriber, error) {
+	subs, err := s.subs.GetSubscribersByRepo(repo)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Subscriber, 0, len(subs))
+	for _, sub := range subs {
+		out = append(out, Subscriber{ID: sub.ID, Email: sub.Email, Token: sub.Token})
+	}
+	return out, nil
 }

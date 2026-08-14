@@ -1,26 +1,28 @@
-package scanner
+package releasetracking
 
 import (
 	"context"
 	"fmt"
 	"github-release-notifier/internal/metrics"
-	"github-release-notifier/internal/model"
+	"github-release-notifier/internal/repospec"
+	"github-release-notifier/internal/subscription"
 	"log/slog"
 	"time"
 )
 
-// SubscriberRepository covers aggregate queries scanner needs to find
-// unique repos with active subscriptions and per-repo subscriber lists.
-// Split from a previous RepoStore fat interface (ISP)
-type SubscriberRepository interface {
-	GetActiveRepos() ([]string, error)
-	GetSubscribersByRepo(repo string) ([]model.Subscription, error)
+// SubscriberSource is the scanner's view of the subscription domain (its
+// facade): which repos have confirmed subscribers, and who they are. It
+// receives slim subscription.Subscriber DTOs — the scanner never touches the
+// full Subscription entity or the subscriptions table.
+type SubscriberSource interface {
+	ActiveRepos() ([]string, error)
+	SubscribersForRepo(repo string) ([]subscription.Subscriber, error)
 }
 
 // ReleaseTrackingStore reads and writes the per-repo last-seen-tag
 // state that scanner uses to detect new releases
 type ReleaseTrackingStore interface {
-	GetRepoTracking(repo string) (*model.Repository, error)
+	GetRepoTracking(repo string) (*Repository, error)
 	UpsertRepoTracking(repo, lastSeenTag string) error
 }
 
@@ -36,7 +38,7 @@ type ReleaseNotifier interface {
 
 // Scanner periodically checks GitHub for new releases with goroutine and ticker and notifies subscribers
 type Scanner struct {
-	subs     SubscriberRepository
+	subs     SubscriberSource
 	tracking ReleaseTrackingStore
 	github   ReleaseChecker
 	notifier ReleaseNotifier
@@ -45,7 +47,7 @@ type Scanner struct {
 }
 
 // create a new Scanner
-func New(subs SubscriberRepository, tracking ReleaseTrackingStore, github ReleaseChecker, notifier ReleaseNotifier, intervalSecs int, baseURL string) *Scanner {
+func New(subs SubscriberSource, tracking ReleaseTrackingStore, github ReleaseChecker, notifier ReleaseNotifier, intervalSecs int, baseURL string) *Scanner {
 	return &Scanner{
 		subs:     subs,
 		tracking: tracking,
@@ -88,7 +90,7 @@ func (s *Scanner) scan(ctx context.Context) {
 	start := time.Now()
 	defer func() { metrics.ScannerCycleDuration.Observe(time.Since(start).Seconds()) }()
 
-	repos, err := s.subs.GetActiveRepos()
+	repos, err := s.subs.ActiveRepos()
 	if err != nil {
 		metrics.ScannerErrorsTotal.WithLabelValues("list_repos").Inc()
 		slog.Error("Scanner failed to get active repos", "err", err)
@@ -122,7 +124,7 @@ func (s *Scanner) checkRepo(ctx context.Context, repoStr string) {
 // of: parse error, GitHub error, repo has no releases, tag unchanged.
 // All failures are logged here; callers just check the boolean
 func (s *Scanner) detectNewRelease(ctx context.Context, repoStr string) (string, bool) {
-	spec, err := model.ParseRepoSpec(repoStr)
+	spec, err := repospec.ParseRepoSpec(repoStr)
 	if err != nil {
 		slog.Warn("Scanner skipping invalid repo format", "repo", repoStr)
 		return "", false
@@ -167,7 +169,7 @@ func (s *Scanner) recordAndNotify(repoStr, newTag string) {
 		return
 	}
 
-	subscribers, err := s.subs.GetSubscribersByRepo(repoStr)
+	subscribers, err := s.subs.SubscribersForRepo(repoStr)
 	if err != nil {
 		metrics.ScannerErrorsTotal.WithLabelValues("subscribers").Inc()
 		slog.Error("Scanner failed to get subscribers", "repo", repoStr, "err", err)

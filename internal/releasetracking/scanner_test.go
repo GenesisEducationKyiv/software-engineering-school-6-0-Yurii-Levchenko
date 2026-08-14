@@ -1,4 +1,4 @@
-package scanner
+package releasetracking
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github-release-notifier/internal/model"
+	"github-release-notifier/internal/subscription"
 )
 
 // --- Fakes for the four scanner interfaces. ---
@@ -15,13 +15,13 @@ import (
 // background process whose only externally visible effect is "did it
 // upsert / did it send", checking those calls IS the behavior).
 
-// fakeSubs implements SubscriberRepository.
+// fakeSubs implements SubscriberSource.
 type fakeSubs struct {
-	subscribersByRepo map[string][]model.Subscription
+	subscribersByRepo map[string][]subscription.Subscriber
 	subscribersErr    error
 }
 
-func (f *fakeSubs) GetActiveRepos() ([]string, error) {
+func (f *fakeSubs) ActiveRepos() ([]string, error) {
 	repos := make([]string, 0, len(f.subscribersByRepo))
 	for r := range f.subscribersByRepo {
 		repos = append(repos, r)
@@ -29,7 +29,7 @@ func (f *fakeSubs) GetActiveRepos() ([]string, error) {
 	return repos, nil
 }
 
-func (f *fakeSubs) GetSubscribersByRepo(repo string) ([]model.Subscription, error) {
+func (f *fakeSubs) SubscribersForRepo(repo string) ([]subscription.Subscriber, error) {
 	if f.subscribersErr != nil {
 		return nil, f.subscribersErr
 	}
@@ -38,7 +38,7 @@ func (f *fakeSubs) GetSubscribersByRepo(repo string) ([]model.Subscription, erro
 
 // fakeTracking implements ReleaseTrackingStore.
 type fakeTracking struct {
-	state     map[string]*model.Repository // repo -> tracking row
+	state     map[string]*Repository // repo -> tracking row
 	getErr    error
 	upsertErr error
 	upserted  map[string]string // repo -> tag that was upserted
@@ -46,12 +46,12 @@ type fakeTracking struct {
 
 func newFakeTracking() *fakeTracking {
 	return &fakeTracking{
-		state:    map[string]*model.Repository{},
+		state:    map[string]*Repository{},
 		upserted: map[string]string{},
 	}
 }
 
-func (f *fakeTracking) GetRepoTracking(repo string) (*model.Repository, error) {
+func (f *fakeTracking) GetRepoTracking(repo string) (*Repository, error) {
 	if f.getErr != nil {
 		return nil, f.getErr
 	}
@@ -101,7 +101,7 @@ func (f *fakeNotifier) SendReleaseNotification(to, repo, tag, unsubURL string) e
 // assertion. Tests should treat the scanner as the SUT and the returned
 // fakes as both inputs (configure) and probes (assert calls).
 func newScanner() (s *Scanner, subs *fakeSubs, tracking *fakeTracking, release *fakeRelease, notifier *fakeNotifier) {
-	subs = &fakeSubs{subscribersByRepo: map[string][]model.Subscription{}}
+	subs = &fakeSubs{subscribersByRepo: map[string][]subscription.Subscriber{}}
 	tracking = newFakeTracking()
 	release = &fakeRelease{tags: map[string]string{}}
 	notifier = &fakeNotifier{failFor: map[string]error{}}
@@ -127,7 +127,7 @@ func TestDetectNewRelease_FirstSeenTag_ReturnsTrue(t *testing.T) {
 func TestDetectNewRelease_NewerTagThanTracked_ReturnsTrue(t *testing.T) {
 	s, _, tracking, release, _ := newScanner()
 	release.tags["golang/go"] = "v1.22.0"
-	tracking.state["golang/go"] = &model.Repository{Repo: "golang/go", LastSeenTag: "v1.21.0"}
+	tracking.state["golang/go"] = &Repository{Repo: "golang/go", LastSeenTag: "v1.21.0"}
 
 	tag, ok := s.detectNewRelease(context.Background(), "golang/go")
 	if !ok || tag != "v1.22.0" {
@@ -138,7 +138,7 @@ func TestDetectNewRelease_NewerTagThanTracked_ReturnsTrue(t *testing.T) {
 func TestDetectNewRelease_UnchangedTag_ReturnsFalse(t *testing.T) {
 	s, _, tracking, release, _ := newScanner()
 	release.tags["golang/go"] = "v1.22.0"
-	tracking.state["golang/go"] = &model.Repository{Repo: "golang/go", LastSeenTag: "v1.22.0"}
+	tracking.state["golang/go"] = &Repository{Repo: "golang/go", LastSeenTag: "v1.22.0"}
 
 	_, ok := s.detectNewRelease(context.Background(), "golang/go")
 	if ok {
@@ -192,7 +192,7 @@ func TestDetectNewRelease_TrackingError_ReturnsFalse(t *testing.T) {
 
 func TestRecordAndNotify_UpsertsTagAndNotifiesAll(t *testing.T) {
 	s, subs, tracking, _, notifier := newScanner()
-	subs.subscribersByRepo["golang/go"] = []model.Subscription{
+	subs.subscribersByRepo["golang/go"] = []subscription.Subscriber{
 		{Email: "a@b.com", Token: "tok-A"},
 		{Email: "c@d.com", Token: "tok-C"},
 	}
@@ -218,7 +218,7 @@ func TestRecordAndNotify_UpsertsTagAndNotifiesAll(t *testing.T) {
 func TestRecordAndNotify_UpsertFails_NoNotificationsSent(t *testing.T) {
 	s, subs, tracking, _, notifier := newScanner()
 	tracking.upsertErr = errors.New("db error")
-	subs.subscribersByRepo["golang/go"] = []model.Subscription{
+	subs.subscribersByRepo["golang/go"] = []subscription.Subscriber{
 		{Email: "a@b.com", Token: "tok-A"},
 	}
 
@@ -233,7 +233,7 @@ func TestRecordAndNotify_UpsertFails_NoNotificationsSent(t *testing.T) {
 
 func TestRecordAndNotify_OneRecipientFails_ContinuesOthers(t *testing.T) {
 	s, subs, _, _, notifier := newScanner()
-	subs.subscribersByRepo["golang/go"] = []model.Subscription{
+	subs.subscribersByRepo["golang/go"] = []subscription.Subscriber{
 		{Email: "a@b.com", Token: "tok-A"},
 		{Email: "broken@b.com", Token: "tok-B"},
 		{Email: "c@d.com", Token: "tok-C"},
@@ -271,7 +271,7 @@ func TestRecordAndNotify_SubscribersFetchFails_NoNotificationsSent(t *testing.T)
 func TestCheckRepo_NewRelease_PersistsAndNotifies(t *testing.T) {
 	s, subs, tracking, release, notifier := newScanner()
 	release.tags["golang/go"] = "v1.22.0"
-	subs.subscribersByRepo["golang/go"] = []model.Subscription{
+	subs.subscribersByRepo["golang/go"] = []subscription.Subscriber{
 		{Email: "a@b.com", Token: "tok-A"},
 	}
 
@@ -288,8 +288,8 @@ func TestCheckRepo_NewRelease_PersistsAndNotifies(t *testing.T) {
 func TestCheckRepo_UnchangedTag_DoesNothing(t *testing.T) {
 	s, subs, tracking, release, notifier := newScanner()
 	release.tags["golang/go"] = "v1.22.0"
-	tracking.state["golang/go"] = &model.Repository{LastSeenTag: "v1.22.0"}
-	subs.subscribersByRepo["golang/go"] = []model.Subscription{
+	tracking.state["golang/go"] = &Repository{LastSeenTag: "v1.22.0"}
+	subs.subscribersByRepo["golang/go"] = []subscription.Subscriber{
 		{Email: "a@b.com", Token: "tok-A"},
 	}
 

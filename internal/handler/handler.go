@@ -2,8 +2,7 @@ package handler
 
 import (
 	"github-release-notifier/internal/metrics"
-	"github-release-notifier/internal/model"
-	"github-release-notifier/internal/service"
+	"github-release-notifier/internal/subscription"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -12,17 +11,23 @@ import (
 
 // Handler holds HTTP handler methods
 type Handler struct {
-	svc *service.Service
+	svc *subscription.Service
 }
 
 // create a new Handler
-func New(svc *service.Service) *Handler {
+func New(svc *subscription.Service) *Handler {
 	return &Handler{svc: svc}
+}
+
+// SubscribeRequest is the JSON body for POST /api/subscribe.
+type SubscribeRequest struct {
+	Email string `json:"email" binding:"required,email"`
+	Repo  string `json:"repo" binding:"required"`
 }
 
 // Subscribe handles POST /api/subscribe
 func (h *Handler) Subscribe(c *gin.Context) {
-	var req model.SubscribeRequest
+	var req SubscribeRequest
 
 	// bind and validate JSON body
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -97,7 +102,7 @@ func (h *Handler) GetSubscriptions(c *gin.Context) {
 
 	// return empty array instead of nil (null)
 	if subs == nil {
-		subs = []model.Subscription{}
+		subs = []subscription.Subscription{}
 	}
 
 	c.JSON(http.StatusOK, subs)
@@ -105,12 +110,12 @@ func (h *Handler) GetSubscriptions(c *gin.Context) {
 
 // translateError converts a service-layer error into an HTTP response
 func translateError(err error) (status int, msg string) {
-	switch service.KindOf(err) {
-	case service.KindInvalid:
+	switch subscription.KindOf(err) {
+	case subscription.KindInvalid:
 		return http.StatusBadRequest, err.Error()
-	case service.KindNotFound:
+	case subscription.KindNotFound:
 		return http.StatusNotFound, err.Error()
-	case service.KindConflict:
+	case subscription.KindConflict:
 		return http.StatusConflict, err.Error()
 	default:
 		return http.StatusInternalServerError, "internal server error"
