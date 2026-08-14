@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github-release-notifier/internal/metrics"
-	"log"
+	"log/slog"
 )
 
 // Cache values for repo_exists results. We serialize booleans as
@@ -49,22 +49,22 @@ func (cc *CachedClient) CheckRepoExists(ctx context.Context, owner, repo string)
 	// check cache
 	val, err := cc.cache.Get(key)
 	if err != nil {
-		log.Printf("Cache error (non-fatal): %v", err)
+		slog.Warn("Cache read error (non-fatal)", "key", key, "err", err)
 	}
 	if val == cachedTrue {
 		metrics.GitHubAPICalls.WithLabelValues("check_repo", "hit").Inc()
-		log.Printf("Cache HIT: %s exists", key)
+		slog.Debug("Cache hit", "key", key, "exists", true)
 		return true, nil
 	}
 	if val == cachedFalse {
 		metrics.GitHubAPICalls.WithLabelValues("check_repo", "hit").Inc()
-		log.Printf("Cache HIT: %s not found", key)
+		slog.Debug("Cache hit", "key", key, "exists", false)
 		return false, nil
 	}
 
 	// cache miss - call GitHub API
 	metrics.GitHubAPICalls.WithLabelValues("check_repo", "miss").Inc()
-	log.Printf("Cache MISS: %s, calling GitHub API", key)
+	slog.Debug("Cache miss, calling GitHub API", "key", key)
 	exists, err := cc.client.CheckRepoExists(ctx, owner, repo)
 	if err != nil {
 		return false, err
@@ -76,7 +76,7 @@ func (cc *CachedClient) CheckRepoExists(ctx context.Context, owner, repo string)
 		cacheVal = cachedTrue
 	}
 	if cacheErr := cc.cache.Set(key, cacheVal); cacheErr != nil {
-		log.Printf("Cache write error (non-fatal): %v", cacheErr)
+		slog.Warn("Cache write error (non-fatal)", "key", key, "err", cacheErr)
 	}
 
 	return exists, nil
@@ -90,17 +90,17 @@ func (cc *CachedClient) GetLatestRelease(ctx context.Context, owner, repo string
 	// check cache
 	val, err := cc.cache.Get(key)
 	if err != nil {
-		log.Printf("Cache error (non-fatal): %v", err)
+		slog.Warn("Cache read error (non-fatal)", "key", key, "err", err)
 	}
 	if val != "" {
 		metrics.GitHubAPICalls.WithLabelValues("latest_release", "hit").Inc()
-		log.Printf("Cache HIT: %s = %s", key, val)
+		slog.Debug("Cache hit", "key", key, "tag", val)
 		return val, nil
 	}
 
 	// cache miss — call GitHub API
 	metrics.GitHubAPICalls.WithLabelValues("latest_release", "miss").Inc()
-	log.Printf("Cache MISS: %s, calling GitHub API", key)
+	slog.Debug("Cache miss, calling GitHub API", "key", key)
 	tag, err := cc.client.GetLatestRelease(ctx, owner, repo)
 	if err != nil {
 		return "", err
@@ -109,7 +109,7 @@ func (cc *CachedClient) GetLatestRelease(ctx context.Context, owner, repo string
 	// store in cache (even empty string means "no releases")
 	if tag != "" {
 		if cacheErr := cc.cache.Set(key, tag); cacheErr != nil {
-			log.Printf("Cache write error (non-fatal): %v", cacheErr)
+			slog.Warn("Cache write error (non-fatal)", "key", key, "err", cacheErr)
 		}
 	}
 

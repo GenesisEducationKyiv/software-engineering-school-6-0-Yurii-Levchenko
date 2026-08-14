@@ -3,7 +3,8 @@ package main
 import (
 	"context"
 	"errors"
-	"log"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -14,6 +15,7 @@ import (
 	"github-release-notifier/internal/cache"
 	"github-release-notifier/internal/config"
 	"github-release-notifier/internal/github"
+	"github-release-notifier/internal/logging"
 	"github-release-notifier/internal/notifier"
 	"github-release-notifier/internal/repository"
 	"github-release-notifier/internal/scanner"
@@ -28,38 +30,53 @@ import (
 )
 
 func main() {
+	// Keep main() thin: all logic lives in run() so that deferred cleanup
+	// (db.Close, redisCache.Close, cancel) actually executes.
+	if err := run(); err != nil {
+		slog.Error("application exited with error", "err", err)
+		// os.Exit skips defers, so we only ever call it here, after run() has returned and its defers have run.
+		os.Exit(1)
+	}
+}
+
+// run wires dependencies, starts the server + scanner, and blocks until a
+// shutdown signal or a fatal server error
+func run() error {
 	// Load .env file (ignored in Docker where env vars are set directly)
 	_ = godotenv.Load()
 
 	// Load configuration from env variables
 	cfg := config.Load()
 
+	// Configure structured JSON logging before anything else logs
+	logging.Setup(cfg.LogLevel)
+
 	// --- DB Connection ---
-	log.Println("Connecting to database...")
+	slog.Info("Connecting to database")
 	db, err := sqlx.Connect("postgres", cfg.DatabaseURL)
 	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
+		return fmt.Errorf("connect to database: %w", err)
 	}
 	defer db.Close()
-	log.Println("Database connected successfully")
+	slog.Info("Database connected")
 
 	// --- Run Migrations ---
-	log.Println("Running database migrations...")
+	slog.Info("Running database migrations")
 	if err := runMigrations(cfg.DatabaseURL); err != nil {
-		log.Fatalf("Failed to run migrations: %v", err)
+		return fmt.Errorf("run migrations: %w", err)
 	}
-	log.Println("Migrations completed")
+	slog.Info("Migrations completed")
 
 	// --- Redis Cache ---
-	log.Println("Connecting to Redis...")
+	slog.Info("Connecting to Redis")
 	ttl := time.Duration(cfg.CacheTTLSeconds) * time.Second
 	redisCache, err := cache.New(cfg.RedisURL, ttl)
 	if err != nil {
-		log.Printf("WARNING: Redis not available, running without cache: %v", err)
+		slog.Warn("Redis not available, running without cache", "err", err)
 		redisCache = nil
 	} else {
 		defer redisCache.Close()
-		log.Printf("Redis connected (TTL: %v)", ttl)
+		slog.Info("Redis connected", "ttl", ttl)
 	}
 
 	// --- Initialize Dependencies ---
@@ -101,20 +118,25 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	// Start server in a goroutine
+	// Start server in a goroutine; a fatal listen error is surfaced via the
+	// channel so run() can return it (and defers can clean up).
+	serverErr := make(chan error, 1)
 	go func() {
-		log.Printf("Server starting on port %s", cfg.AppPort)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server failed: %v", err)
+		slog.Info("Server starting", "port", cfg.AppPort)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErr <- err
 		}
 	}()
 
-	// Wait for interrupt signal (Ctrl+C or Docker stop)
+	// Block until either the server fails or we get a shutdown signal.
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-
-	log.Println("Shutting down gracefully...")
+	select {
+	case err := <-serverErr:
+		return fmt.Errorf("http server: %w", err)
+	case <-quit:
+		slog.Info("Shutting down gracefully")
+	}
 
 	// Stop scanner
 	cancel()
@@ -124,9 +146,10 @@ func main() {
 	defer shutdownCancel()
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Fatalf("Server forced to shutdown: %v", err)
+		return fmt.Errorf("server shutdown: %w", err)
 	}
-	log.Println("Server stopped")
+	slog.Info("Server stopped")
+	return nil
 }
 
 // applies all pending SQL migrations
