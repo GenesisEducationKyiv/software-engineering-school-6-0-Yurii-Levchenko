@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 
 	"github.com/jmoiron/sqlx"
 )
@@ -60,9 +61,26 @@ func (s *Store) GetSubscriptionByEmailAndRepo(email, repo string) (*Subscription
 }
 
 func (s *Store) ConfirmSubscription(token string) error {
-	query := `UPDATE subscriptions SET confirmed = true WHERE token = $1`
+	query := `UPDATE subscriptions SET confirmed = true, status = 'confirmed' WHERE token = $1`
 	_, err := s.db.Exec(query, token)
 	return err
+}
+
+// MarkFailed records that the subscription's confirmation email could not be
+// sent (saga compensation C1). We mark, not delete — the row stays as an
+// auditable terminal state and a future re-subscribe can reactivate it.
+func (s *Store) MarkFailed(ctx context.Context, id int) error {
+	const q = `UPDATE subscriptions SET status = 'failed' WHERE id = $1`
+	res, err := s.db.ExecContext(ctx, q, id)
+	if err != nil {
+		return fmt.Errorf("mark subscription %d failed: %w", id, err)
+	}
+	// Compensation must actually hit a row; 0 rows means a wrong/gone id — surface
+	// it instead of a silent no-op (review: k1llzers).
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return fmt.Errorf("mark subscription %d failed: no rows updated", id)
+	}
+	return nil
 }
 
 func (s *Store) DeleteSubscription(token string) error {

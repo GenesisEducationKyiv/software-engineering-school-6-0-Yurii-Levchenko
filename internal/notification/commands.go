@@ -29,4 +29,7 @@ type SagaReply struct {
 const (
 	// SagaStatusSent means the saga's email step completed successfully.
 	SagaStatusSent = "sent"
+	// SagaStatusFailed means the email could not be sent after retries; the
+	// orchestrator compensates (marks the subscription failed).
+	SagaStatusFailed = "failed"
 )
