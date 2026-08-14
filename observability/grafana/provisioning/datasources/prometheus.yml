@@ -1,0 +1,15 @@
+# Grafana datasource provisioning.
+#
+# On startup Grafana reads this file and auto-registers Prometheus as a data
+# source — no manual "Add data source" clicking in the UI. `prometheus` is the
+# container hostname on the shared docker-compose network.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus          # stable id the dashboard JSON references
+    access: proxy            # Grafana server queries Prometheus (not the browser)
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true

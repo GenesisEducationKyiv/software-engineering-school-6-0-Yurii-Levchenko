@@ -1,0 +1,13 @@
+# Grafana dashboard provider.
+#
+# Tells Grafana to load any dashboard JSON files found in the mounted folder
+# (/var/lib/grafana/dashboards) on startup, so our dashboard appears
+# automatically without importing it by hand in the UI.
+apiVersion: 1
+
+providers:
+  - name: notifier-dashboards
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

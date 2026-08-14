@@ -1,0 +1,15 @@
+# buf code generation. We use buf REMOTE plugins (run on buf.build), so there is
+# no local protoc / protoc-gen-go / protoc-gen-go-grpc to install — important on
+# Windows. Output goes to gen/ with source-relative paths, so the file at
+# proto/notifier/v1/notifier.proto generates gen/notifier/v1/*.pb.go (matching
+# the go_package option in the .proto).
+version: v2
+plugins:
+  - remote: buf.build/protocolbuffers/go:v1.36.11
+    out: gen
+    opt:
+      - paths=source_relative
+  - remote: buf.build/grpc/go:v1.5.1
+    out: gen
+    opt:
+      - paths=source_relative

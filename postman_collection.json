@@ -1,0 +1,204 @@
+{
+	"info": {
+		"name": "GitHub Release Notification API",
+		"description": "SE School 6.0 Case — API for subscribing to GitHub repo release notifications.\n\nUsage:\n1. Run `docker-compose up --build`\n2. Use 'Subscribe' request first\n3. Check Mailtrap for confirmation email\n4. Copy token UUID from the email link\n5. Paste into collection variable 'token'\n6. Use 'Confirm' request\n7. Use 'List Subscriptions' to verify",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://localhost:8080",
+			"type": "string"
+		},
+		{
+			"key": "token",
+			"value": "",
+			"type": "string",
+			"description": "Paste confirmation/unsubscribe token here (UUID from Mailtrap email)"
+		},
+		{
+			"key": "email",
+			"value": "levchenko.yurii024@gmail.com",
+			"type": "string"
+		},
+		{
+			"key": "repo",
+			"value": "docker/compose",
+			"type": "string"
+		}
+	],
+	"item": [
+		{
+			"name": "Health Check",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/health",
+					"host": ["{{base_url}}"],
+					"path": ["health"]
+				},
+				"description": "Verify the API is running. Returns {\"status\":\"ok\"} if healthy."
+			}
+		},
+		{
+			"name": "Subscribe to Repo",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"email\": \"{{email}}\",\n    \"repo\": \"{{repo}}\"\n}"
+				},
+				"url": {
+					"raw": "{{base_url}}/api/subscribe",
+					"host": ["{{base_url}}"],
+					"path": ["api", "subscribe"]
+				},
+				"description": "Subscribe an email to release notifications for a GitHub repo.\n\nAfter success, check Mailtrap inbox for a confirmation email.\nCopy the UUID token from the confirm link and paste it into the collection variable 'token'.\n\nResponses:\n- 200: Subscription created\n- 400: Invalid email or bad repo format\n- 404: Repo not found on GitHub\n- 409: Already subscribed"
+			}
+		},
+		{
+			"name": "Confirm Subscription",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/api/confirm/{{token}}",
+					"host": ["{{base_url}}"],
+					"path": ["api", "confirm", "{{token}}"]
+				},
+				"description": "Confirm an email subscription using the token from the confirmation email.\n\nBefore using: paste the UUID token from Mailtrap email into the collection variable 'token'.\n\nResponses:\n- 200: Subscription confirmed\n- 404: Token not found"
+			}
+		},
+		{
+			"name": "List Active Subscriptions",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/api/subscriptions?email={{email}}",
+					"host": ["{{base_url}}"],
+					"path": ["api", "subscriptions"],
+					"query": [
+						{
+							"key": "email",
+							"value": "{{email}}"
+						}
+					]
+				},
+				"description": "Get all active (confirmed) subscriptions for an email address.\n\nResponses:\n- 200: JSON array of subscriptions (empty array if none)\n- 400: Missing or invalid email parameter"
+			}
+		},
+		{
+			"name": "Unsubscribe",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/api/unsubscribe/{{token}}",
+					"host": ["{{base_url}}"],
+					"path": ["api", "unsubscribe", "{{token}}"]
+				},
+				"description": "Unsubscribe from release notifications using the subscription token.\n\nResponses:\n- 200: Unsubscribed successfully\n- 404: Token not found"
+			}
+		},
+		{
+			"name": "Error — Bad Email (400)",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"email\": \"not-an-email\",\n    \"repo\": \"golang/go\"\n}"
+				},
+				"url": {
+					"raw": "{{base_url}}/api/subscribe",
+					"host": ["{{base_url}}"],
+					"path": ["api", "subscribe"]
+				},
+				"description": "Test: invalid email format returns 400."
+			}
+		},
+		{
+			"name": "Error — Bad Repo Format (400)",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"email\": \"test@test.com\",\n    \"repo\": \"noslashhere\"\n}"
+				},
+				"url": {
+					"raw": "{{base_url}}/api/subscribe",
+					"host": ["{{base_url}}"],
+					"path": ["api", "subscribe"]
+				},
+				"description": "Test: repo without owner/repo format returns 400."
+			}
+		},
+		{
+			"name": "Error — Repo Not Found (404)",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"email\": \"test@test.com\",\n    \"repo\": \"thisrepo/doesnotexist999\"\n}"
+				},
+				"url": {
+					"raw": "{{base_url}}/api/subscribe",
+					"host": ["{{base_url}}"],
+					"path": ["api", "subscribe"]
+				},
+				"description": "Test: nonexistent GitHub repo returns 404."
+			}
+		},
+		{
+			"name": "Error — Bad Token (404)",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/api/confirm/fake-token-that-doesnt-exist",
+					"host": ["{{base_url}}"],
+					"path": ["api", "confirm", "fake-token-that-doesnt-exist"]
+				},
+				"description": "Test: nonexistent confirmation token returns 404."
+			}
+		},
+		{
+			"name": "Prometheus Metrics",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/metrics",
+					"host": ["{{base_url}}"],
+					"path": ["metrics"]
+				},
+				"description": "Prometheus metrics endpoint. Shows HTTP request counts, subscription/scanner/notification counters, GitHub API cache hit/miss rates, and Go runtime stats."
+			}
+		}
+	]
+}

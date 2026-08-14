@@ -1,0 +1,126 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: notifier
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # RabbitMQ: the message broker (HW8). The monolith publishes notification
+  # commands here; the notifier consumes them. Volume keeps durable queues +
+  # persistent messages across restarts. Management UI on :15672 (guest/guest).
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    ports:
+      - "5672:5672"    # AMQP — app + notifier connect here
+      - "15672:15672"  # management UI: http://localhost:15672
+    volumes:
+      - rabbitmqdata:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  # Mailpit: fake SMTP server for local dev and E2E tests.
+  # Captures every email sent by the notifier; nothing leaves the host.
+  # SMTP on 1025, web UI on http://localhost:8025 for inspection.
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "1025:1025"  # SMTP
+      - "8025:8025"  # Web UI
+
+  # Notifier microservice: consumes notification commands from RabbitMQ and
+  # sends the emails via SMTP. The only process that speaks SMTP. The HTTP
+  # server now serves /health only (for this healthcheck). Redis backs the
+  # idempotency check (skip already-sent messages).
+  notifier:
+    build:
+      context: .
+      dockerfile: Dockerfile.notifier
+    ports:
+      # Host 9091 -> container 9090: avoids clashing with Prometheus, which
+      # publishes host 9090 in the observability stack (both can run together).
+      - "9091:9090"
+      - "50051:50051"  # gRPC confirmation transport (ADR-011)
+    environment:
+      NOTIFIER_PORT: "9090"
+      NOTIFIER_GRPC_PORT: "50051"
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      REDIS_URL: redis://redis:6379/0
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_USER: ""
+      SMTP_PASS: ""
+      SMTP_FROM: noreply@github-notifier.local
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:9090/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: on-failure
+    labels:
+      logging: "notifier"
+
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      # Override .env so the app inside Docker reaches services by container
+      # hostname, and publishes notifications to RabbitMQ (the notifier consumes).
+      DATABASE_URL: postgres://postgres:postgres@db:5432/notifier?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      # Confirmation transport (ADR-011): "broker" (default, async via RabbitMQ)
+      # or "grpc" (synchronous call to the notifier). Flip to grpc to smoke-test it.
+      CONFIRMATION_TRANSPORT: "broker" # either "broker" or "grpc"
+      NOTIFIER_GRPC_ADDR: notifier:50051
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: on-failure
+    # Explicit opt-in for log collection. Filebeat ships only containers
+    # carrying this label (see observability/filebeat/filebeat.yml). Using a
+    # label — not the container/image name — keeps the filter intentional and
+    # stable: it survives project renames and works with multiple replicas.
+    labels:
+      logging: "notifier"
+
+volumes:
+  pgdata:
+  rabbitmqdata:

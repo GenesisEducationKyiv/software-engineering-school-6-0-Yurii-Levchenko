@@ -1,0 +1,263 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github-release-notifier/internal/notification"
+
+	amqp "github.com/rabbitmq/amqp091-go"
+)
+
+const (
+	queueName = "notifications"
+	dlxName   = "notifications.dlx"
+	dlqName   = "notifications.dlq"
+)
+
+// emailSender is what the consumer needs from the SMTP layer; an interface so
+// the message-handling logic is testable without a real mail server.
+type emailSender interface {
+	SendConfirmationEmail(to, confirmURL string) error
+	SendReleaseNotification(to, repo, tag, unsubscribeURL string) error
+}
+
+// Consumer reads notification commands from RabbitMQ and sends the emails.
+type Consumer struct {
+	sender      emailSender
+	dedup       deduper
+	maxAttempts int           // email send attempts before reporting failure
+	backoff     time.Duration // wait between attempts
+}
+
+func NewConsumer(sender emailSender, dedup deduper) *Consumer {
+	return &Consumer{sender: sender, dedup: dedup, maxAttempts: 3, backoff: 500 * time.Millisecond}
+}
+
+// replier publishes a saga reply (a step outcome) back to the orchestrator. An
+// interface so the message-handling logic stays testable without a real broker.
+type replier interface {
+	ReplyConfirmation(ctx context.Context, sagaID, status string) error
+}
+
+// channelReplier publishes saga replies on the consumer's AMQP channel. Reusing
+// the consume channel is safe: the consume loop is single-goroutine, so a publish
+// never runs concurrently with another publish or consume.
+type channelReplier struct {
+	ch *amqp.Channel
+}
+
+func (r *channelReplier) ReplyConfirmation(ctx context.Context, sagaID, status string) error {
+	body, err := json.Marshal(notification.SagaReply{SagaID: sagaID, Status: status})
+	if err != nil {
+		return err
+	}
+	return r.ch.PublishWithContext(ctx, notification.ExchangeName, notification.RoutingSagaReply, false, false, amqp.Publishing{
+		ContentType:  "application/json",
+		DeliveryMode: amqp.Persistent,
+		MessageId:    "saga-reply:" + sagaID,
+		Body:         body,
+	})
+}
+
+// Run connects to RabbitMQ, declares the topology (exchange, work queue with a
+// dead-letter route, and the DLQ), then consumes until ctx is canceled.
+func (c *Consumer) Run(ctx context.Context, url string) error {
+	conn, err := amqp.Dial(url)
+	if err != nil {
+		return fmt.Errorf("dial rabbitmq: %w", err)
+	}
+	defer conn.Close()
+
+	ch, err := conn.Channel()
+	if err != nil {
+		return fmt.Errorf("open channel: %w", err)
+	}
+	defer ch.Close()
+
+	if err := c.declareTopology(ch); err != nil {
+		return err
+	}
+
+	// Manual ack (autoAck=false): we ack only after the email is sent, so a
+	// crash mid-send redelivers the message instead of losing it.
+	deliveries, err := ch.Consume(queueName, "", false, false, false, false, nil)
+	if err != nil {
+		return fmt.Errorf("consume: %w", err)
+	}
+
+	rep := &channelReplier{ch: ch}
+
+	slog.Info("Notifier consumer started", "queue", queueName)
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Info("Notifier consumer stopping")
+			return nil
+		case d, ok := <-deliveries:
+			if !ok {
+				return fmt.Errorf("deliveries channel closed")
+			}
+			if err := c.handle(ctx, rep, d); err != nil {
+				slog.Error("Notifier failed to process message, dead-lettering",
+					"routing_key", d.RoutingKey, "message_id", d.MessageId, "err", err)
+				_ = d.Nack(false, false) // requeue=false -> routed to the DLQ
+				continue
+			}
+			_ = d.Ack(false)
+		}
+	}
+}
+
+func (c *Consumer) declareTopology(ch *amqp.Channel) error {
+	if err := ch.ExchangeDeclare(notification.ExchangeName, "direct", true, false, false, false, nil); err != nil {
+		return fmt.Errorf("declare exchange: %w", err)
+	}
+	// Dead-letter exchange + queue for messages that fail processing.
+	if err := ch.ExchangeDeclare(dlxName, "fanout", true, false, false, false, nil); err != nil {
+		return fmt.Errorf("declare dlx: %w", err)
+	}
+	if _, err := ch.QueueDeclare(dlqName, true, false, false, false, nil); err != nil {
+		return fmt.Errorf("declare dlq: %w", err)
+	}
+	if err := ch.QueueBind(dlqName, "", dlxName, false, nil); err != nil {
+		return fmt.Errorf("bind dlq: %w", err)
+	}
+	// Work queue: failed messages are dead-lettered to the DLX.
+	if _, err := ch.QueueDeclare(queueName, true, false, false, false, amqp.Table{
+		"x-dead-letter-exchange": dlxName,
+	}); err != nil {
+		return fmt.Errorf("declare queue: %w", err)
+	}
+	for _, key := range []string{notification.RoutingConfirm, notification.RoutingRelease} {
+		if err := ch.QueueBind(queueName, key, notification.ExchangeName, false, nil); err != nil {
+			return fmt.Errorf("bind queue %s: %w", key, err)
+		}
+	}
+	return ch.Qos(10, 0, false) // at most 10 unacked messages in flight
+}
+
+// handle runs the idempotent-consumer flow: skip if already processed, send the
+// email, then mark it processed. A returned error tells Run to dead-letter the
+// message; nil means ack.
+func (c *Consumer) handle(ctx context.Context, rep replier, d amqp.Delivery) error {
+	if d.MessageId != "" {
+		seen, err := c.dedup.AlreadyProcessed(ctx, d.MessageId)
+		if err != nil {
+			// Fail open: a Redis blip shouldn't block delivery; a rare duplicate
+			// beats a lost notification.
+			slog.Warn("Notifier dedup check failed, processing anyway", "message_id", d.MessageId, "err", err)
+		} else if seen {
+			slog.Info("Notifier skipping duplicate", "message_id", d.MessageId)
+			// The email already went out on the first delivery. Re-report success
+			// for a saga confirmation so the resume-sweeper's re-drive can still
+			// complete the saga even though we skip the send.
+			c.replyAlreadySent(ctx, rep, d)
+			return nil
+		}
+	}
+
+	if err := c.dispatch(ctx, rep, d); err != nil {
+		return err
+	}
+
+	if d.MessageId != "" {
+		if err := c.dedup.MarkProcessed(ctx, d.MessageId); err != nil {
+			slog.Warn("Notifier failed to mark processed", "message_id", d.MessageId, "err", err)
+		}
+	}
+	return nil
+}
+
+// dispatch decodes one delivery by its routing key, sends the email, and (for a
+// saga-driven confirmation) reports the outcome back to the orchestrator.
+func (c *Consumer) dispatch(ctx context.Context, rep replier, d amqp.Delivery) error {
+	switch d.RoutingKey {
+	case notification.RoutingConfirm:
+		var req notification.ConfirmationRequest
+		if err := json.Unmarshal(d.Body, &req); err != nil {
+			return fmt.Errorf("decode confirmation: %w", err)
+		}
+		// Retry transient SMTP failures a few times before giving up.
+		sendErr := c.sendWithRetry(ctx, func() error {
+			return c.sender.SendConfirmationEmail(req.To, req.ConfirmURL)
+		})
+		// Report the step outcome so the orchestrator can complete or compensate
+		// the saga. A lost reply is normally recovered by the resume sweeper, so a
+		// best-effort publish is fine — UNLESS the send ALSO failed (see below).
+		var replyErr error
+		if req.SagaID != "" {
+			status := notification.SagaStatusSent
+			if sendErr != nil {
+				status = notification.SagaStatusFailed
+			}
+			if replyErr = rep.ReplyConfirmation(ctx, req.SagaID, status); replyErr != nil {
+				slog.Warn("Notifier failed to publish saga reply", "saga_id", req.SagaID, "err", replyErr)
+			}
+		}
+		if sendErr != nil {
+			// A non-saga command has no reply path, so surface the error to DLQ it.
+			if req.SagaID == "" {
+				return fmt.Errorf("send confirmation: %w", sendErr)
+			}
+			// Saga command: if we ALSO failed to publish the outcome, the orchestrator
+			// won't learn about it from this delivery — don't silently ack. Return an
+			// error (nack -> DLQ; the sweeper re-drives from the outbox). Review: k1llzers.
+			if replyErr != nil {
+				return fmt.Errorf("send confirmation failed and reply not delivered (saga %s): %w", req.SagaID, sendErr)
+			}
+			slog.Error("Notifier confirmation email failed after retries; reported to saga",
+				"saga_id", req.SagaID, "err", sendErr)
+		}
+		return nil
+	case notification.RoutingRelease:
+		var req notification.ReleaseRequest
+		if err := json.Unmarshal(d.Body, &req); err != nil {
+			return fmt.Errorf("decode release: %w", err)
+		}
+		return c.sender.SendReleaseNotification(req.To, req.Repo, req.Tag, req.UnsubscribeURL)
+	default:
+		return fmt.Errorf("unknown routing key %q", d.RoutingKey)
+	}
+}
+
+// replyAlreadySent re-publishes a "sent" reply for an already-processed saga
+// confirmation, so the resume-sweeper's re-drive completes the saga even though
+// we skip sending the email a second time. Best-effort: a non-saga or non-confirm
+// duplicate has nothing to report.
+func (c *Consumer) replyAlreadySent(ctx context.Context, rep replier, d amqp.Delivery) {
+	if d.RoutingKey != notification.RoutingConfirm {
+		return
+	}
+	var req notification.ConfirmationRequest
+	if err := json.Unmarshal(d.Body, &req); err != nil || req.SagaID == "" {
+		return
+	}
+	if err := rep.ReplyConfirmation(ctx, req.SagaID, notification.SagaStatusSent); err != nil {
+		slog.Warn("Notifier failed to re-publish saga reply on duplicate", "saga_id", req.SagaID, "err", err)
+	}
+}
+
+// sendWithRetry calls send up to maxAttempts times with a fixed backoff between
+// tries, so a transient SMTP hiccup doesn't immediately fail the saga. It blocks
+// the (single) consume goroutine during backoff — acceptable at this volume.
+func (c *Consumer) sendWithRetry(ctx context.Context, send func() error) error {
+	var err error
+	for attempt := 1; attempt <= c.maxAttempts; attempt++ {
+		if err = send(); err == nil {
+			return nil
+		}
+		if attempt == c.maxAttempts {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(c.backoff):
+		}
+	}
+	return err
+}

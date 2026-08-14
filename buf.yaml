@@ -1,0 +1,12 @@
+# buf v2 configuration. `buf lint` enforces the STANDARD rule set (consistent
+# package/message/field/RPC naming, a vN package suffix, dir<->package match);
+# `buf breaking` guards the wire contract against incompatible changes.
+version: v2
+modules:
+  - path: proto
+lint:
+  use:
+    - STANDARD
+breaking:
+  use:
+    - FILE

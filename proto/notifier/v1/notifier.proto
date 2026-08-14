@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package notifier.v1;
+
+option go_package = "github-release-notifier/gen/notifier/v1;notifierv1";
+
+// NotifierService is the gRPC transport for the subscribe-saga's confirmation
+// step. It is the synchronous (HTTP/2 + protobuf) sibling of the DEFAULT
+// asynchronous broker path: the orchestrator can call SendConfirmation directly
+// instead of publishing a command to RabbitMQ. The broker path stays the
+// default (ADR-011); gRPC is opt-in via CONFIRMATION_TRANSPORT=grpc.
+service NotifierService {
+  // SendConfirmation renders and sends one subscription-confirmation email.
+  // Success is the gRPC status code codes.OK; a non-OK status (InvalidArgument
+  // on bad input, Unavailable when the mail backend fails) lets the orchestrator
+  // complete or compensate the saga inline.
+  rpc SendConfirmation(SendConfirmationRequest) returns (SendConfirmationResponse);
+}
+
+// SendConfirmationRequest carries everything the notifier needs to send one
+// confirmation email. No saga_id: the gRPC path is synchronous, so the
+// orchestrator already knows which saga it is driving and advances it from the
+// call's return value — the id never needs to travel on the wire.
+message SendConfirmationRequest {
+  string email = 1;
+  string repo = 2;
+  string confirm_url = 3;
+}
+
+// SendConfirmationResponse is intentionally empty: the send outcome is the gRPC
+// status code, not a field in the body. Keeping a named response message (vs
+// google.protobuf.Empty) leaves room to add fields later without breaking the
+// contract.
+message SendConfirmationResponse {}
