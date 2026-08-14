@@ -10,7 +10,7 @@ type Config struct {
 	DatabaseURL      string
 	AppPort          string
 	BaseURL          string
-	NotifierURL      string
+	RabbitMQURL      string
 	GitHubToken      string
 	ScanIntervalSecs int
 	RedisURL         string
@@ -25,7 +25,7 @@ func Load() *Config {
 		DatabaseURL:      getEnv("DATABASE_URL", "postgres://postgres:postgres@db:5432/notifier?sslmode=disable"),
 		AppPort:          getEnv("APP_PORT", "8080"),
 		BaseURL:          getEnv("BASE_URL", "http://localhost:8080"),
-		NotifierURL:      getEnv("NOTIFIER_URL", "http://localhost:9090"),
+		RabbitMQURL:      getEnv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"),
 		GitHubToken:      getEnv("GITHUB_TOKEN", ""),
 		ScanIntervalSecs: getEnvInt("SCAN_INTERVAL_SECONDS", 600),
 		RedisURL:         getEnv("REDIS_URL", "redis://localhost:6379/0"),

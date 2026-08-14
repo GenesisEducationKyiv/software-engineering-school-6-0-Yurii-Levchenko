@@ -95,9 +95,13 @@ func run() error {
 		scannerGH = ghClient
 	}
 
-	// Delivery moved to the notifier service; HTTPSender swaps in for SMTPSender
-	// behind the same interfaces, so callers (service, scanner) are untouched.
-	emailNotifier := notification.NewHTTPSender(cfg.NotifierURL)
+	// Notifications are published to RabbitMQ; the notifier service consumes
+	// them. Same EmailNotifier/ReleaseNotifier interfaces — callers unchanged.
+	emailNotifier, err := notification.NewBrokerPublisher(cfg.RabbitMQURL)
+	if err != nil {
+		return fmt.Errorf("connect to broker: %w", err)
+	}
+	defer emailNotifier.Close()
 	svc := subscription.New(subStore, trackStore, ghService, emailNotifier, cfg.BaseURL)
 
 	// --- Start Background Scanner with context for graceful shutdown ---

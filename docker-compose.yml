@@ -25,6 +25,23 @@ services:
       timeout: 5s
       retries: 5
 
+  # RabbitMQ: the message broker (HW8). The monolith publishes notification
+  # commands here; the notifier consumes them. Volume keeps durable queues +
+  # persistent messages across restarts. Management UI on :15672 (guest/guest).
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    ports:
+      - "5672:5672"    # AMQP — app + notifier connect here
+      - "15672:15672"  # management UI: http://localhost:15672
+    volumes:
+      - rabbitmqdata:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
   # Mailpit: fake SMTP server for local dev and E2E tests.
   # Captures every email sent by the notifier; nothing leaves the host.
   # SMTP on 1025, web UI on http://localhost:8025 for inspection.
@@ -34,9 +51,10 @@ services:
       - "1025:1025"  # SMTP
       - "8025:8025"  # Web UI
 
-  # Notifier microservice: the only process that speaks SMTP. The monolith
-  # POSTs notification requests here over HTTP/JSON; this service relays them
-  # to Mailpit. Extracting it is the point of HW7 Phase 2.
+  # Notifier microservice: consumes notification commands from RabbitMQ and
+  # sends the emails via SMTP. The only process that speaks SMTP. The HTTP
+  # server now serves /health only (for this healthcheck). Redis backs the
+  # idempotency check (skip already-sent messages).
   notifier:
     build:
       context: .
@@ -47,12 +65,18 @@ services:
       - "9091:9090"
     environment:
       NOTIFIER_PORT: "9090"
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      REDIS_URL: redis://redis:6379/0
       SMTP_HOST: mailpit
       SMTP_PORT: "1025"
       SMTP_USER: ""
       SMTP_PASS: ""
       SMTP_FROM: noreply@github-notifier.local
     depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
       mailpit:
         condition: service_started
     healthcheck:
@@ -72,16 +96,16 @@ services:
       - .env
     environment:
       # Override .env so the app inside Docker reaches services by container
-      # hostname, and delegates email to the notifier service (no SMTP here).
+      # hostname, and publishes notifications to RabbitMQ (the notifier consumes).
       DATABASE_URL: postgres://postgres:postgres@db:5432/notifier?sslmode=disable
       REDIS_URL: redis://redis:6379/0
-      NOTIFIER_URL: http://notifier:9090
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
-      notifier:
+      rabbitmq:
         condition: service_healthy
     restart: on-failure
     # Explicit opt-in for log collection. Filebeat ships only containers
@@ -93,3 +117,4 @@ services:
 
 volumes:
   pgdata:
+  rabbitmqdata:
