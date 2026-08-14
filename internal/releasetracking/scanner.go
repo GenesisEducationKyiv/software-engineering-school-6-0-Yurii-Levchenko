@@ -23,7 +23,8 @@ type SubscriberSource interface {
 // state that scanner uses to detect new releases
 type ReleaseTrackingStore interface {
 	GetRepoTracking(repo string) (*Repository, error)
-	UpsertRepoTracking(repo, lastSeenTag string) error
+	TouchLastChecked(repo string) error
+	RecordRelease(repo, tag string) error
 }
 
 // ReleaseChecker defines the GitHub API operations the scanner needs
@@ -88,7 +89,12 @@ func (s *Scanner) scan(ctx context.Context) {
 	// Measure how long a full cycle takes (RED: duration). Growing duration
 	// vs the configured interval is the early signal the scanner is falling behind.
 	start := time.Now()
-	defer func() { metrics.ScannerCycleDuration.Observe(time.Since(start).Seconds()) }()
+	defer func() {
+		metrics.ScannerCycleDuration.Observe(time.Since(start).Seconds())
+		// Stamp even after a failed cycle: the signal is "scanner is alive
+		// and running", not "cycle succeeded" (errors have their own counter).
+		metrics.ScannerLastRunTimestamp.SetToCurrentTime()
+	}()
 
 	repos, err := s.subs.ActiveRepos()
 	if err != nil {
@@ -136,6 +142,12 @@ func (s *Scanner) detectNewRelease(ctx context.Context, repoStr string) (string,
 		slog.Error("Scanner failed to get latest release", "repo", repoStr, "err", err)
 		return "", false
 	}
+	// GitHub answered — stamp the check time regardless of what we find below.
+	if err := s.tracking.TouchLastChecked(repoStr); err != nil {
+		metrics.ScannerErrorsTotal.WithLabelValues("tracking").Inc()
+		slog.Error("Scanner failed to stamp last_checked_at", "repo", repoStr, "err", err)
+	}
+
 	if latestTag == "" {
 		return "", false // repo has no releases yet
 	}
@@ -163,7 +175,7 @@ func (s *Scanner) detectNewRelease(ctx context.Context, repoStr string) (string,
 // it; will be added when notifications move to an async worker pool
 // (see TODO in system-design/README.md).
 func (s *Scanner) recordAndNotify(repoStr, newTag string) {
-	if err := s.tracking.UpsertRepoTracking(repoStr, newTag); err != nil {
+	if err := s.tracking.RecordRelease(repoStr, newTag); err != nil {
 		metrics.ScannerErrorsTotal.WithLabelValues("tracking").Inc()
 		slog.Error("Scanner failed to update tracking", "repo", repoStr, "err", err)
 		return

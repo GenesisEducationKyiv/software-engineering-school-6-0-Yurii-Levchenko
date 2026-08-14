@@ -79,6 +79,15 @@ var (
 		Buckets: prometheus.DefBuckets,
 	})
 
+	// ScannerLastRunTimestamp holds the unix time of the last finished scan
+	// cycle. Freshness signal: `time() - scanner_last_run_timestamp_seconds`
+	// growing past the scan interval means the scanner is stuck or dead —
+	// something rate() over counters cannot distinguish from "no work to do".
+	ScannerLastRunTimestamp = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "scanner_last_run_timestamp_seconds",
+		Help: "Unix timestamp of the last finished scanner cycle",
+	})
+
 	// ScannerErrorsTotal counts failures by stage (github / tracking /
 	// subscribers / notify) — the "errors" signal for the worker.
 	ScannerErrorsTotal = prometheus.NewCounterVec(
@@ -110,6 +119,7 @@ func init() {
 		ReleasesDetected,
 		NotificationsSent,
 		ScannerCycleDuration,
+		ScannerLastRunTimestamp,
 		ScannerErrorsTotal,
 		GitHubAPICalls,
 	)

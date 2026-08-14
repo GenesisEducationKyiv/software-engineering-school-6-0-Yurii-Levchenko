@@ -13,7 +13,7 @@ import (
 // Each fake exposes its received calls/state so tests can assert on
 // behavior (Lecture 6: test behavior, not implementation — but for a
 // background process whose only externally visible effect is "did it
-// upsert / did it send", checking those calls IS the behavior).
+// record / did it send", checking those calls IS the behavior).
 
 // fakeSubs implements SubscriberSource.
 type fakeSubs struct {
@@ -40,14 +40,16 @@ func (f *fakeSubs) SubscribersForRepo(repo string) ([]subscription.Subscriber, e
 type fakeTracking struct {
 	state     map[string]*Repository // repo -> tracking row
 	getErr    error
-	upsertErr error
-	upserted  map[string]string // repo -> tag that was upserted
+	recordErr error
+	recorded  map[string]string // repo -> tag recorded as a new release
+	touched   map[string]int    // repo -> TouchLastChecked call count
 }
 
 func newFakeTracking() *fakeTracking {
 	return &fakeTracking{
 		state:    map[string]*Repository{},
-		upserted: map[string]string{},
+		recorded: map[string]string{},
+		touched:  map[string]int{},
 	}
 }
 
@@ -58,11 +60,16 @@ func (f *fakeTracking) GetRepoTracking(repo string) (*Repository, error) {
 	return f.state[repo], nil
 }
 
-func (f *fakeTracking) UpsertRepoTracking(repo, lastSeenTag string) error {
-	if f.upsertErr != nil {
-		return f.upsertErr
+func (f *fakeTracking) TouchLastChecked(repo string) error {
+	f.touched[repo]++
+	return nil
+}
+
+func (f *fakeTracking) RecordRelease(repo, tag string) error {
+	if f.recordErr != nil {
+		return f.recordErr
 	}
-	f.upserted[repo] = lastSeenTag
+	f.recorded[repo] = tag
 	return nil
 }
 
@@ -190,7 +197,7 @@ func TestDetectNewRelease_TrackingError_ReturnsFalse(t *testing.T) {
 
 // --- recordAndNotify ---
 
-func TestRecordAndNotify_UpsertsTagAndNotifiesAll(t *testing.T) {
+func TestRecordAndNotify_RecordsTagAndNotifiesAll(t *testing.T) {
 	s, subs, tracking, _, notifier := newScanner()
 	subs.subscribersByRepo["golang/go"] = []subscription.Subscriber{
 		{Email: "a@b.com", Token: "tok-A"},
@@ -199,8 +206,8 @@ func TestRecordAndNotify_UpsertsTagAndNotifiesAll(t *testing.T) {
 
 	s.recordAndNotify("golang/go", "v1.22.0")
 
-	if tracking.upserted["golang/go"] != "v1.22.0" {
-		t.Errorf("upserted tag = %q, want v1.22.0", tracking.upserted["golang/go"])
+	if tracking.recorded["golang/go"] != "v1.22.0" {
+		t.Errorf("recorded tag = %q, want v1.22.0", tracking.recorded["golang/go"])
 	}
 	if len(notifier.sent) != 2 {
 		t.Fatalf("sent %d notifications, want 2", len(notifier.sent))
@@ -215,16 +222,16 @@ func TestRecordAndNotify_UpsertsTagAndNotifiesAll(t *testing.T) {
 	}
 }
 
-func TestRecordAndNotify_UpsertFails_NoNotificationsSent(t *testing.T) {
+func TestRecordAndNotify_RecordFails_NoNotificationsSent(t *testing.T) {
 	s, subs, tracking, _, notifier := newScanner()
-	tracking.upsertErr = errors.New("db error")
+	tracking.recordErr = errors.New("db error")
 	subs.subscribersByRepo["golang/go"] = []subscription.Subscriber{
 		{Email: "a@b.com", Token: "tok-A"},
 	}
 
 	s.recordAndNotify("golang/go", "v1.22.0")
 
-	// Function bails out after the upsert error — without persisting the
+	// Function bails out after the record error — without persisting the
 	// new tag we shouldn't be telling users it's released.
 	if len(notifier.sent) != 0 {
 		t.Errorf("sent %d, want 0 (must abort before notifying)", len(notifier.sent))
@@ -257,9 +264,9 @@ func TestRecordAndNotify_SubscribersFetchFails_NoNotificationsSent(t *testing.T)
 	// Tag IS persisted before subscribers are fetched — that's actually
 	// fine, the next cycle will see "tag unchanged" and skip. But no
 	// emails should go out on this cycle.
-	if tracking.upserted["golang/go"] != "v1.22.0" {
-		t.Errorf("upserted = %q, want v1.22.0 (upsert happens before subscriber fetch)",
-			tracking.upserted["golang/go"])
+	if tracking.recorded["golang/go"] != "v1.22.0" {
+		t.Errorf("recorded = %q, want v1.22.0 (record happens before subscriber fetch)",
+			tracking.recorded["golang/go"])
 	}
 	if len(notifier.sent) != 0 {
 		t.Errorf("sent %d, want 0 on subscriber fetch error", len(notifier.sent))
@@ -277,8 +284,8 @@ func TestCheckRepo_NewRelease_PersistsAndNotifies(t *testing.T) {
 
 	s.checkRepo(context.Background(), "golang/go")
 
-	if tracking.upserted["golang/go"] != "v1.22.0" {
-		t.Errorf("upserted = %q, want v1.22.0", tracking.upserted["golang/go"])
+	if tracking.recorded["golang/go"] != "v1.22.0" {
+		t.Errorf("recorded = %q, want v1.22.0", tracking.recorded["golang/go"])
 	}
 	if len(notifier.sent) != 1 {
 		t.Errorf("sent %d, want 1", len(notifier.sent))
@@ -295,11 +302,16 @@ func TestCheckRepo_UnchangedTag_DoesNothing(t *testing.T) {
 
 	s.checkRepo(context.Background(), "golang/go")
 
-	if _, persisted := tracking.upserted["golang/go"]; persisted {
-		t.Error("upsert should not be called when tag is unchanged")
+	if _, persisted := tracking.recorded["golang/go"]; persisted {
+		t.Error("no release should be recorded when tag is unchanged")
 	}
 	if len(notifier.sent) != 0 {
 		t.Errorf("sent %d, want 0", len(notifier.sent))
+	}
+	// The check itself must still be stamped — that's the whole point of
+	// last_checked_at being independent from releases.
+	if tracking.touched["golang/go"] != 1 {
+		t.Errorf("touched = %d, want 1 (check time stamped even when nothing new)", tracking.touched["golang/go"])
 	}
 }
 
@@ -308,10 +320,14 @@ func TestCheckRepo_InvalidRepoFormat_DoesNothing(t *testing.T) {
 
 	s.checkRepo(context.Background(), "broken-spec")
 
-	if len(tracking.upserted) != 0 {
-		t.Errorf("upserted %v, want empty", tracking.upserted)
+	if len(tracking.recorded) != 0 {
+		t.Errorf("recorded %v, want empty", tracking.recorded)
 	}
 	if len(notifier.sent) != 0 {
 		t.Errorf("sent %d, want 0", len(notifier.sent))
+	}
+	// GitHub was never called, so no check happened — nothing to stamp.
+	if len(tracking.touched) != 0 {
+		t.Errorf("touched %v, want empty (no GitHub call, no check)", tracking.touched)
 	}
 }
