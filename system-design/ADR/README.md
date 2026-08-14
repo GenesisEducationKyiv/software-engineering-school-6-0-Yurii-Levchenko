@@ -25,6 +25,7 @@ ADR-и не редагуються після прийняття. Якщо рі�
 | 006 | [Прокидання context.Context через всю call chain](006-context-propagation-through-call-chain.md)| Прийнято |
 | 009 | [Вибір брокера повідомлень — RabbitMQ](009-message-broker-rabbitmq.md)                          | Прийнято |
 | 010 | [Розподілена транзакція підписки через оркестровану Saga](010-orchestrated-saga-for-subscribe.md)| Прийнято |
+| 011 | [gRPC як опційний синхронний транспорт для confirmation-кроку](011-grpc-for-confirmation-transport.md)| Прийнято |
 
 ## Як додавати нові ADR
 
