@@ -358,7 +358,7 @@ for {
 - **Конфіг через env:** `SMTP_*`, `RABBITMQ_URL`, `REDIS_URL`. Dev — Mailpit; прод — SES/SendGrid/Mailgun без зміни коду.
 - **gRPC (HW10):** окрім AMQP-консюмера, notifier піднімає gRPC-сервер для синхронного confirmation-транспорту (опційний) — деталі в §4.10.
 
-### 4.7 Observability (Prometheus + structured logs)
+### 4.7 Observability (метрики + структуроване логування)
 
 **Метрики на `/metrics`:**
 - HTTP: `http_requests_total{method,path,status}`, `http_request_duration_seconds`
@@ -366,7 +366,25 @@ for {
 - Сканер: `scanner_runs_total`, `releases_detected_total`, `notifications_sent_total`
 - GitHub: `github_api_calls_total{endpoint, cache="hit|miss"}` — пряма видимість ефективності кешу
 
-**Логи:** структуровані JSON через `log/slog` (default handler у `internal/logging`); на кожен HTTP-запит — access-log через middleware `RequestLogger` з `X-Request-ID`. Шиппинг у Kibana через Filebeat → Elasticsearch (HW6).
+**Структуроване логування (slog → Elasticsearch → Kibana)** — див. [ADR-007](./ADR/007-structured-logging-and-log-pipeline.md):
+
+- Усі логи — JSON через stdlib `log/slog` (default handler ставиться раз у `internal/logging.Setup`, рівень із env `LOG_LEVEL`). Замість plain-text `log.Printf` — структуровані поля: `slog.Info("new release detected", "repo", repo, "tag", tag)`.
+- HTTP-запити логуються middleware `RequestLogger`: один JSON-рядок на запит (`method, path, status, duration_ms, client_ip, request_id`). `request_id` генерується/читається з `X-Request-ID` і повертається у відповідь — для кореляції.
+- **Конвеєр доставки** (окремий `docker-compose.observability.yml`):
+
+```mermaid
+flowchart LR
+    App[App + Notifier<br/>slog JSON → stdout]
+    FB[Filebeat<br/>читає json-file логи,<br/>decode_json_fields,<br/>фільтр за label logging:notifier]
+    ES[(Elasticsearch<br/>notifier-logs-*)]
+    KB[Kibana<br/>пошук + візуалізація]
+
+    App -->|json-file logs| FB
+    FB -->|bulk index| ES
+    ES --> KB
+```
+
+- Сервіси нічого не знають про Elasticsearch — пишуть лише в stdout; Filebeat окремим компонентом збирає, парсить і доставляє. Збираються тільки контейнери з Docker-лейблом `logging: notifier` (явний opt-in, стійкіший за фільтр за іменем контейнера). У Kibana — пошук за полями (`level: ERROR`, `status >= 400`) і агрегація.
 
 ### 4.8 Saga-оркестратор (підписка)
 
@@ -552,6 +570,8 @@ sequenceDiagram
 | Email (dev) | Mailpit (SMTP + UI) | локальний fake-inbox | — |
 | Тестування | Go testing + interfaces з моками | Без зовнішніх залежностей у тестах | [006](./ADR/006-context-propagation-through-call-chain.md) |
 | Метрики | Prometheus client_golang | Стандарт індустрії | — |
+| Логування | `log/slog` (JSON, stdlib) | Структуровано, нуль залежностей | [007](./ADR/007-structured-logging-and-log-pipeline.md) |
+| Конвеєр логів | Filebeat → Elasticsearch → Kibana | Пошук/агрегація логів; app лишається чистим | [007](./ADR/007-structured-logging-and-log-pipeline.md) |
 | Контейнеризація | Docker + docker-compose | Reproducible setup | — |
 | CI | GitHub Actions + golangci-lint | Стандарт для GitHub-проєктів | — |
 
@@ -562,6 +582,8 @@ sequenceDiagram
 - **Email worker-pool у notifier** — паралельні SMTP-відправки замість послідовних (зняти head-of-line blocking)
 - **Distributed lock на сканер** через Redis SETNX або Postgres advisory lock — для multi-instance розгортання
 - **OpenTelemetry tracing** — використати наявне context propagation, додати spans у GitHub-клієнт і SMTP
+- **RED-метрики + Grafana dashboard** — Prometheus-конвеєр і дашборд ключових метрик (HW6, у роботі)
+- **Проброс `request_id` глибше** — у service/repository логи через `context`, не лише в access-логу
 - **Integration-тести з testcontainers** — реальні Postgres + Redis у тестах
 - ✅ **gRPC-транспорт для confirmation** (HW10, ADR-011) — реалізовано як opt-in sync-альтернатива з `buf`-контрактом і бенчмарком; далі можна винести й release-нотифікації або дати gRPC для зовнішнього API
 - **Rate limiting per IP** — захист від abuse на subscribe
