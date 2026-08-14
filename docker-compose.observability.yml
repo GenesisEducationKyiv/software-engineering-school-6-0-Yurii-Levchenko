@@ -71,6 +71,29 @@ services:
     ports:
       - "9090:9090"
 
+  # Grafana: dashboards over Prometheus. Datasource + dashboard are
+  # provisioned from files (as code) — nothing to click in the UI.
+  # Anonymous access is on (dev only) so the dashboard opens without login.
+  # UI at http://localhost:3000.
+  grafana:
+    image: grafana/grafana:11.2.2
+    container_name: notifier-grafana
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+    volumes:
+      # Provisioning: auto-register the Prometheus datasource + dashboard provider.
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      # The dashboard JSON the provider above loads from.
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
 volumes:
   esdata:
   promdata:
+  grafanadata:
