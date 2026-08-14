@@ -104,7 +104,7 @@ services:
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
       # Confirmation transport (ADR-011): "broker" (default, async via RabbitMQ)
       # or "grpc" (synchronous call to the notifier). Flip to grpc to smoke-test it.
-      CONFIRMATION_TRANSPORT: "broker"
+      CONFIRMATION_TRANSPORT: "broker" # either "broker" or "grpc"
       NOTIFIER_GRPC_ADDR: notifier:50051
     depends_on:
       db:
