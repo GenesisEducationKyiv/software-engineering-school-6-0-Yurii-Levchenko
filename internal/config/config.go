@@ -10,11 +10,7 @@ type Config struct {
 	DatabaseURL      string
 	AppPort          string
 	BaseURL          string
-	SMTPHost         string
-	SMTPPort         string
-	SMTPUser         string
-	SMTPPass         string
-	SMTPFrom         string
+	NotifierURL      string
 	GitHubToken      string
 	ScanIntervalSecs int
 	RedisURL         string
@@ -29,11 +25,7 @@ func Load() *Config {
 		DatabaseURL:      getEnv("DATABASE_URL", "postgres://postgres:postgres@db:5432/notifier?sslmode=disable"),
 		AppPort:          getEnv("APP_PORT", "8080"),
 		BaseURL:          getEnv("BASE_URL", "http://localhost:8080"),
-		SMTPHost:         getEnv("SMTP_HOST", "sandbox.smtp.mailtrap.io"),
-		SMTPPort:         getEnv("SMTP_PORT", "587"),
-		SMTPUser:         getEnv("SMTP_USER", ""),
-		SMTPPass:         getEnv("SMTP_PASS", ""),
-		SMTPFrom:         getEnv("SMTP_FROM", "noreply@github-notifier.local"),
+		NotifierURL:      getEnv("NOTIFIER_URL", "http://localhost:9090"),
 		GitHubToken:      getEnv("GITHUB_TOKEN", ""),
 		ScanIntervalSecs: getEnvInt("SCAN_INTERVAL_SECONDS", 600),
 		RedisURL:         getEnv("REDIS_URL", "redis://localhost:6379/0"),

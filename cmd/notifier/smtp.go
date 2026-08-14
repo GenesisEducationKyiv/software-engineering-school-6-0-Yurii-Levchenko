@@ -1,13 +1,12 @@
-package notification
+package main
 
 import (
 	"fmt"
 	"net/smtp"
 )
 
-// SMTPSender is the SMTP-backed implementation of the notification contract.
-// In the microservice split the monolith swaps it for an HTTP client without
-// the callers (subscription service, scanner) changing.
+// SMTPSender is the SMTP-backed notification sender. It lives in the notifier
+// service only — the monolith no longer imports net/smtp.
 type SMTPSender struct {
 	host string
 	port string
@@ -16,15 +15,8 @@ type SMTPSender struct {
 	from string
 }
 
-// NewSMTPSender builds an SMTP-backed notification sender.
 func NewSMTPSender(host, port, user, pass, from string) *SMTPSender {
-	return &SMTPSender{
-		host: host,
-		port: port,
-		user: user,
-		pass: pass,
-		from: from,
-	}
+	return &SMTPSender{host: host, port: port, user: user, pass: pass, from: from}
 }
 
 func (s *SMTPSender) SendConfirmationEmail(to, confirmURL string) error {
