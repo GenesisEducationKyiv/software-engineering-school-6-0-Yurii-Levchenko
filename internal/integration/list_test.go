@@ -40,17 +40,23 @@ func TestListSubscriptions_HappyPath(t *testing.T) {
 		t.Fatalf("list: got %d, want 200; body=%s", status, body)
 	}
 
-	// Assertion — only the confirmed one should come back.
+	// Assertion — all subscriptions come back now, each with its status.
 	var subs []map[string]any
 	if err := json.Unmarshal(body, &subs); err != nil {
 		t.Fatalf("unmarshal: %v; body=%s", err, body)
 	}
-	if len(subs) != 1 {
-		t.Fatalf("active subs: got %d, want 1 (only confirmed); body=%s",
-			len(subs), body)
+	if len(subs) != 2 {
+		t.Fatalf("subs: got %d, want 2 (all statuses); body=%s", len(subs), body)
 	}
-	if subs[0]["repo"] != "golang/go" {
-		t.Errorf("returned repo: got %v, want golang/go", subs[0]["repo"])
+	statusByRepo := map[string]any{}
+	for _, s := range subs {
+		statusByRepo[s["repo"].(string)] = s["status"]
+	}
+	if statusByRepo["golang/go"] != "confirmed" {
+		t.Errorf("golang/go status: got %v, want confirmed", statusByRepo["golang/go"])
+	}
+	if statusByRepo["gin-gonic/gin"] != "pending" {
+		t.Errorf("gin-gonic/gin status: got %v, want pending", statusByRepo["gin-gonic/gin"])
 	}
 }
 

@@ -9,9 +9,9 @@ type Subscription struct {
 	Repo      string `db:"repo" json:"repo"`
 	Token     string `db:"token" json:"token"`
 	Confirmed bool   `db:"confirmed" json:"confirmed"`
-	// Status is the lifecycle state: pending | confirmed | failed. json:"-" keeps
-	// it internal for now; it is exposed through the API in a later PR.
-	Status    string    `db:"status" json:"-"`
+	// Status is the lifecycle state: pending | confirmed | failed. Exposed in the
+	// API so the UI can show a subscription that could not be confirmed-emailed.
+	Status    string    `db:"status" json:"status"`
 	CreatedAt time.Time `db:"created_at" json:"created_at"`
 }
 

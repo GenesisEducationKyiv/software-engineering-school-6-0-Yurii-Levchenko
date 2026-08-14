@@ -148,20 +148,23 @@
             submitBtn.disabled = true;
             submitBtn.textContent = 'Subscribing...';
 
+            const emailVal = document.getElementById('email').value;
+            const repoVal = document.getElementById('repo').value;
+
             try {
                 const res = await fetch('/api/subscribe', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        email: document.getElementById('email').value,
-                        repo: document.getElementById('repo').value
-                    })
+                    body: JSON.stringify({ email: emailVal, repo: repoVal })
                 });
                 const data = await res.json();
 
                 if (res.ok) {
                     msg.className = 'message success';
                     msg.textContent = data.message + ' Check your email inbox to confirm.';
+                    // The send happens asynchronously — poll the status so we can
+                    // tell the user if it failed (or got confirmed) without a refresh.
+                    pollSubscriptionStatus(emailVal, repoVal);
                 } else {
                     msg.className = 'message error';
                     msg.textContent = data.error;
@@ -175,6 +178,34 @@
             submitBtn.textContent = 'Subscribe';
         });
 
+        // After subscribing, briefly poll GET /api/subscriptions to surface the
+        // async outcome: "failed" (confirmation email couldn't be sent) or
+        // "confirmed". While it stays "pending" we keep the check-your-email note.
+        async function pollSubscriptionStatus(email, repo) {
+            for (let i = 0; i < 10; i++) {
+                await new Promise(r => setTimeout(r, 2000));
+                let subs;
+                try {
+                    const res = await fetch(`/api/subscriptions?email=${encodeURIComponent(email)}`);
+                    subs = await res.json();
+                } catch (err) { return; }
+                if (!Array.isArray(subs)) return;
+                const sub = subs.find(s => s.repo === repo);
+                if (!sub) continue;
+                if (sub.status === 'failed') {
+                    msg.className = 'message error';
+                    msg.textContent = "We couldn't send your confirmation email. Please try subscribing again.";
+                    return;
+                }
+                if (sub.status === 'confirmed') {
+                    msg.className = 'message success';
+                    msg.textContent = 'Subscription confirmed!';
+                    return;
+                }
+                // still pending — keep waiting
+            }
+        }
+
         async function loadSubscriptions() {
             const email = document.getElementById('lookupEmail').value;
             const list = document.getElementById('subList');
@@ -185,16 +216,19 @@
                 const subs = await res.json();
 
                 if (!Array.isArray(subs) || subs.length === 0) {
-                    list.innerHTML = '<p class="empty">No active subscriptions found.</p>';
+                    list.innerHTML = '<p class="empty">No subscriptions found.</p>';
                     return;
                 }
 
-                list.innerHTML = subs.map(s =>
-                    `<div class="sub-item">
-                        <span>${s.repo}</span>
-                        <a href="/api/unsubscribe/${s.token}" onclick="return confirm('Unsubscribe from ${s.repo}?')">unsubscribe</a>
-                    </div>`
-                ).join('');
+                list.innerHTML = subs.map(s => {
+                    const action = s.status === 'failed'
+                        ? `<span style="color:#f85149">failed — subscribe again</span>`
+                        : `<a href="/api/unsubscribe/${s.token}" onclick="return confirm('Unsubscribe from ${s.repo}?')">unsubscribe</a>`;
+                    return `<div class="sub-item">
+                        <span>${s.repo} <em style="color:#8b949e;font-style:normal">· ${s.status}</em></span>
+                        ${action}
+                    </div>`;
+                }).join('');
             } catch (err) {
                 list.innerHTML = '<p class="empty">Failed to load subscriptions.</p>';
             }

@@ -135,6 +135,10 @@ definitions:
       confirmed:
         type: "boolean"
         description: "Whether the subscription is confirmed"
+      status:
+        type: "string"
+        enum: ["pending", "confirmed", "failed"]
+        description: "Lifecycle state: pending (awaiting confirmation), confirmed, or failed (confirmation email could not be sent)"
       last_seen_tag:
         type: "string"
         description: "Last seen release tag for this repository"

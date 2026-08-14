@@ -107,9 +107,12 @@ func (s *Store) DeleteSubscription(token string) error {
 	return err
 }
 
-func (s *Store) GetActiveSubscriptionsByEmail(email string) ([]Subscription, error) {
+// GetSubscriptionsByEmail returns every subscription for the email (any status:
+// pending / confirmed / failed), so the API can show the full picture including
+// a failed confirmation. The scanner uses the confirmed-only queries below.
+func (s *Store) GetSubscriptionsByEmail(email string) ([]Subscription, error) {
 	var subs []Subscription
-	query := `SELECT * FROM subscriptions WHERE email = $1 AND confirmed = true`
+	query := `SELECT * FROM subscriptions WHERE email = $1 ORDER BY created_at`
 	err := s.db.Select(&subs, query, email)
 	return subs, err
 }
