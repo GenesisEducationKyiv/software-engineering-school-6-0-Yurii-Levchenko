@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -140,8 +141,16 @@ func run() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// ctx signals the background workers to stop; wg lets us wait until they
+	// actually have. Without it, run() returns while they are mid-iteration.
+	var wg sync.WaitGroup
+
 	releaseScanner := releasetracking.New(svc, trackStore, scannerGH, emailNotifier, cfg.ScanIntervalSecs, cfg.BaseURL)
-	go releaseScanner.Start(ctx)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		releaseScanner.Start(ctx)
+	}()
 
 	// --- Start the saga reply consumer FIRST ---
 	// It declares the saga.replies queue on connect; starting it before the relay
@@ -149,7 +158,9 @@ func run() error {
 	// not-yet-declared queue and dropped on a fresh broker (review: k1llzers).
 	// Reconnect loop keeps a RabbitMQ blip from taking down the HTTP server.
 	replyConsumer := orchestrator.NewReplyConsumer(sagaStore, subStore)
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		for {
 			if err := replyConsumer.Run(ctx, cfg.RabbitMQURL); err != nil {
 				slog.Error("Saga reply consumer stopped, retrying", "err", err)
@@ -171,7 +182,11 @@ func run() error {
 		emailNotifier,
 		time.Duration(cfg.OutboxPollIntervalMs)*time.Millisecond,
 	)
-	go outboxRelay.Run(ctx)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		outboxRelay.Run(ctx)
+	}()
 
 	// --- Start the saga resume-sweeper ---
 	// Recovers sagas left stuck by a crash or a lost message: re-drives those
@@ -181,7 +196,11 @@ func run() error {
 		time.Duration(cfg.SagaSweepIntervalSecs)*time.Second,
 		time.Duration(cfg.SagaStaleAfterSecs)*time.Second,
 	)
-	go sweeper.Run(ctx)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		sweeper.Run(ctx)
+	}()
 
 	// --- Setup Router ---
 	// Router wiring lives in internal/app so that integration tests can
@@ -216,7 +235,7 @@ func run() error {
 		slog.Info("Shutting down gracefully")
 	}
 
-	// Stop scanner
+	// Signal the background workers to stop.
 	cancel()
 
 	// Give the HTTP server 5 seconds to finish ongoing requests
@@ -227,7 +246,34 @@ func run() error {
 		return fmt.Errorf("server shutdown: %w", err)
 	}
 	slog.Info("Server stopped")
+
+	// Wait for the background workers to actually finish, bounded by a timeout:
+	// a bare wg.Wait() would hang forever if one of them is stuck, which is worse
+	// than exiting dirty. The warning is the only signal that a worker is
+	// systematically failing to stop in time.
+	waitForWorkers(&wg, workerShutdownTimeout)
 	return nil
+}
+
+// workerShutdownTimeout bounds how long run() waits for the background workers
+// after cancellation, leaving room under a typical container grace period.
+const workerShutdownTimeout = 10 * time.Second
+
+// waitForWorkers blocks until every background worker has returned or timeout
+// elapses, whichever comes first.
+func waitForWorkers(wg *sync.WaitGroup, timeout time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		slog.Info("Background workers stopped")
+	case <-time.After(timeout):
+		slog.Warn("Background workers did not stop in time, exiting anyway", "timeout", timeout)
+	}
 }
 
 // applies all pending SQL migrations

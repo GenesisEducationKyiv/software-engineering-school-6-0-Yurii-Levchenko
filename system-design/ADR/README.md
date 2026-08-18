@@ -28,6 +28,7 @@ ADR-и не редагуються після прийняття. Якщо рі�
 | 009 | [Вибір брокера повідомлень — RabbitMQ](009-message-broker-rabbitmq.md)                          | Прийнято |
 | 010 | [Розподілена транзакція підписки через оркестровану Saga](010-orchestrated-saga-for-subscribe.md)| Прийнято |
 | 011 | [gRPC як опційний синхронний транспорт для confirmation-кроку](011-grpc-for-confirmation-transport.md)| Прийнято |
+| 012 | [Порядок publish→record на release-шляху](012-publish-then-record-on-release-path.md)            | Прийнято |
 
 ## Як додавати нові ADR
 

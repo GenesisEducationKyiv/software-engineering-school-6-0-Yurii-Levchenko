@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -71,6 +72,15 @@ func (rc *ReplyConsumer) Run(ctx context.Context, url string) error {
 				return fmt.Errorf("deliveries channel closed")
 			}
 			if err := rc.handleWithRetry(ctx, d.Body); err != nil {
+				// A canceled context means we are shutting down, not that the
+				// reply is bad. Requeue it so the next run picks it up —
+				// dead-lettering a perfectly valid reply would strand the saga
+				// until the sweeper re-drives it.
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					slog.Info("Saga reply interrupted by shutdown, requeueing")
+					_ = d.Nack(false, true)
+					return nil
+				}
 				slog.Error("Saga reply processing failed after retries, dropping", "err", err)
 				_ = d.Nack(false, false)
 				continue

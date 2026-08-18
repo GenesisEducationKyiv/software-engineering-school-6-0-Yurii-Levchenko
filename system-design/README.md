@@ -341,7 +341,16 @@ for {
 1. `repo.GetActiveRepos()` → список унікальних `owner/repo` із підтверджених підписок
 2. Для кожного: `github.GetLatestRelease(ctx, owner, repo)` (через кеш)
 3. Порівняти з `repositories.last_seen_tag` у БД
-4. Якщо тег новий — `RecordRelease(repo, tag)` + для кожного підписника **опублікувати release-команду в RabbitMQ** (`BrokerPublisher`); надсилає лист уже notifier
+4. Якщо тег новий — для кожного підписника **опублікувати release-команду в RabbitMQ**
+   (`BrokerPublisher`), і **лише після того** `RecordRelease(repo, tag)`; надсилає лист уже notifier
+
+**Порядок publish→record — свідомий.** Записувати тег першим означало б dual-write: краш між
+записом і публікацією **назавжди губить реліз**, бо наступний цикл бачить «тег не змінився» і
+нічого не повторює. Публікація першою перетворює незворотну втрату на повтор: тег лишається
+позаду, наступний цикл публікує знову, а notifier дедупить за детермінованим `MessageId`
+(`release:{repo}:{tag}:{token}`), тож підписник не отримає лист двічі. Тег просувається лише як
+доказ того, що **всі** публікації дійшли до брокера — будь-яка помилка тримає його на місці.
+Деталі й відкинуті альтернативи — [ADR-012](ADR/012-publish-then-record-on-release-path.md).
 
 **Масштабування:** на 1 інстансі. Кілька реплік без додаткової координації призвели б до дублікатних повідомлень — потрібен distributed lock (Redis або Postgres advisory lock) перед майбутнім multi-instance розгортанням.
 
@@ -504,12 +513,13 @@ sequenceDiagram
         SC->>DB: SELECT last_seen_tag<br/>WHERE repo=?
         DB-->>SC: "v1.11.0"
         Note over SC: tags differ → new release
-        SC->>DB: UPSERT repositories<br/>SET last_seen_tag="v1.12.0"
         SC->>DB: SELECT email, token<br/>WHERE repo=? AND confirmed=true
         DB-->>SC: [subscribers...]
         loop for each subscriber
             SC->>MQ: publish release command (BrokerPublisher)
         end
+        Note over SC: publish-then-record: тег просувається лише<br/>якщо ВСІ публікації успішні (інакше — повтор)
+        SC->>DB: UPSERT repositories<br/>SET last_seen_tag="v1.12.0"
     end
 ```
 

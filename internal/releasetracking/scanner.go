@@ -113,7 +113,7 @@ func (s *Scanner) scan(ctx context.Context) {
 // checkRepo orchestrates the per-repo cycle for a single repository:
 //
 //	1 detect whether a new release tag exists (vs stored last_seen_tag)
-//	2 if yes — persist the new tag and notify all subscribers
+//	2 if yes — notify all subscribers, then persist the new tag
 //
 // All error logging happens inside the helpers; this function stays thin
 func (s *Scanner) checkRepo(ctx context.Context, repoStr string) {
@@ -167,20 +167,15 @@ func (s *Scanner) detectNewRelease(ctx context.Context, repoStr string) (string,
 	return latestTag, true
 }
 
-// recordAndNotify persists the new last_seen_tag and notifies all
-// confirmed subscribers about the new release. Email-send failures are
-// logged per subscriber but do not abort the loop — we want to attempt
-// every recipient even if one address bounces.
+// recordAndNotify notifies every confirmed subscriber about the new release and
+// only then persists the new last_seen_tag. The tag advances only as proof that
+// every notification reached the broker: any failure leaves it unadvanced so the
+// next cycle retries the whole repo (see ADR-012 for why this order).
+//
 // Note: ctx is not yet plumbed here because the notifier doesn't accept
 // it; will be added when notifications move to an async worker pool
 // (see TODO in system-design/README.md).
 func (s *Scanner) recordAndNotify(repoStr, newTag string) {
-	if err := s.tracking.RecordRelease(repoStr, newTag); err != nil {
-		metrics.ScannerErrorsTotal.WithLabelValues("tracking").Inc()
-		slog.Error("Scanner failed to update tracking", "repo", repoStr, "err", err)
-		return
-	}
-
 	subscribers, err := s.subs.SubscribersForRepo(repoStr)
 	if err != nil {
 		metrics.ScannerErrorsTotal.WithLabelValues("subscribers").Inc()
@@ -188,9 +183,11 @@ func (s *Scanner) recordAndNotify(repoStr, newTag string) {
 		return
 	}
 
+	failed := 0
 	for _, sub := range subscribers {
 		unsubURL := fmt.Sprintf("%s/api/unsubscribe/%s", s.baseURL, sub.Token)
 		if err := s.notifier.SendReleaseNotification(sub.Email, repoStr, newTag, unsubURL); err != nil {
+			failed++
 			metrics.ScannerErrorsTotal.WithLabelValues("notify").Inc()
 			// Log subscription's pk
 			slog.Error("Scanner failed to notify subscriber", "subscription_id", sub.ID, "repo", repoStr, "err", err)
@@ -198,5 +195,18 @@ func (s *Scanner) recordAndNotify(repoStr, newTag string) {
 		}
 		metrics.NotificationsSent.Inc()
 		slog.Info("Scanner notified subscriber", "subscription_id", sub.ID, "repo", repoStr, "tag", newTag)
+	}
+
+	if failed > 0 {
+		slog.Warn("Scanner not advancing tag, will retry next cycle",
+			"repo", repoStr, "tag", newTag, "failed", failed, "subscribers", len(subscribers))
+		return
+	}
+
+	if err := s.tracking.RecordRelease(repoStr, newTag); err != nil {
+		// Same reasoning as above: the tag stays behind, the next cycle
+		// re-publishes, and dedup absorbs the duplicate.
+		metrics.ScannerErrorsTotal.WithLabelValues("tracking").Inc()
+		slog.Error("Scanner failed to update tracking", "repo", repoStr, "err", err)
 	}
 }

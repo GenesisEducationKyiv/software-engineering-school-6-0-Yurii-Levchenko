@@ -30,6 +30,10 @@ type Relay struct {
 	batch    int
 }
 
+// markPublishedTimeout bounds the post-publish bookkeeping write, which runs
+// with cancellation detached from the relay's context.
+const markPublishedTimeout = 5 * time.Second
+
 // NewRelay creates a Relay that polls every interval.
 func NewRelay(store relayStore, pub Publisher, interval time.Duration) *Relay {
 	return &Relay{store: store, pub: pub, interval: interval, batch: 100}
@@ -73,9 +77,23 @@ func (r *Relay) drain(ctx context.Context) {
 				"outbox_id", m.ID, "message_id", m.MessageID, "err", err)
 			return
 		}
-		if err := r.store.MarkPublished(ctx, m.ID); err != nil {
+		if err := r.markPublished(ctx, m); err != nil {
 			slog.Warn("Outbox relay published but failed to mark, may re-publish",
 				"outbox_id", m.ID, "message_id", m.MessageID, "err", err)
 		}
 	}
+}
+
+// markPublished stamps published_at for a message already handed to the broker.
+//
+// It deliberately does NOT inherit cancellation from ctx: Publish has already
+// succeeded, so a shutdown must not stop us from recording that. Otherwise every
+// restart leaves ghost rows (published_at NULL for messages that were in fact
+// published) which the relay re-publishes on the next boot and which are
+// indistinguishable from a genuine failure. It keeps its own short deadline so a
+// hung database can't block shutdown either.
+func (r *Relay) markPublished(ctx context.Context, m Message) error {
+	markCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), markPublishedTimeout)
+	defer cancel()
+	return r.store.MarkPublished(markCtx, m.ID)
 }
