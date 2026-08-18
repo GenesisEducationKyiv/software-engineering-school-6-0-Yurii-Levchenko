@@ -19,6 +19,7 @@ func NewStore(db *sqlx.DB) *Store {
 	return &Store{db: db}
 }
 
+// CreateSubscription inserts a new pending subscription.
 func (s *Store) CreateSubscription(sub *Subscription) error {
 	query := `INSERT INTO subscriptions (email, repo, token, confirmed)
 	          VALUES ($1, $2, $3, $4)`
@@ -40,6 +41,8 @@ func (s *Store) CreateInTx(ctx context.Context, ext sqlx.ExtContext, email, repo
 	return id, nil
 }
 
+// GetSubscriptionByToken looks up a subscription by its confirm/unsubscribe
+// token. Returns (nil, nil) when no row matches.
 func (s *Store) GetSubscriptionByToken(token string) (*Subscription, error) {
 	var sub Subscription
 	query := `SELECT * FROM subscriptions WHERE token = $1`
@@ -50,6 +53,8 @@ func (s *Store) GetSubscriptionByToken(token string) (*Subscription, error) {
 	return &sub, err
 }
 
+// GetSubscriptionByEmailAndRepo looks up the single subscription for an
+// (email, repo) pair. Returns (nil, nil) when none exists.
 func (s *Store) GetSubscriptionByEmailAndRepo(email, repo string) (*Subscription, error) {
 	var sub Subscription
 	query := `SELECT * FROM subscriptions WHERE email = $1 AND repo = $2`
@@ -60,6 +65,7 @@ func (s *Store) GetSubscriptionByEmailAndRepo(email, repo string) (*Subscription
 	return &sub, err
 }
 
+// ConfirmSubscription marks the subscription owning token as confirmed.
 func (s *Store) ConfirmSubscription(token string) error {
 	query := `UPDATE subscriptions SET confirmed = true, status = $1 WHERE token = $2`
 	_, err := s.db.Exec(query, StatusConfirmed, token)
@@ -101,6 +107,7 @@ func (s *Store) ReactivateInTx(ctx context.Context, ext sqlx.ExtContext, id int,
 	return nil
 }
 
+// DeleteSubscription removes the subscription owning token.
 func (s *Store) DeleteSubscription(token string) error {
 	query := `DELETE FROM subscriptions WHERE token = $1`
 	_, err := s.db.Exec(query, token)
@@ -117,6 +124,8 @@ func (s *Store) GetSubscriptionsByEmail(email string) ([]Subscription, error) {
 	return subs, err
 }
 
+// GetActiveRepos returns every distinct repo with at least one confirmed
+// subscription — the scanner poll list.
 func (s *Store) GetActiveRepos() ([]string, error) {
 	var repos []string
 	query := `SELECT DISTINCT repo FROM subscriptions WHERE confirmed = true`
@@ -124,6 +133,7 @@ func (s *Store) GetActiveRepos() ([]string, error) {
 	return repos, err
 }
 
+// GetSubscribersByRepo returns the confirmed subscribers of a repo.
 func (s *Store) GetSubscribersByRepo(repo string) ([]Subscription, error) {
 	var subs []Subscription
 	query := `SELECT * FROM subscriptions WHERE repo = $1 AND confirmed = true`

@@ -3,11 +3,12 @@ package releasetracking
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"time"
+
 	"github-release-notifier/internal/metrics"
 	"github-release-notifier/internal/repospec"
 	"github-release-notifier/internal/subscription"
-	"log/slog"
-	"time"
 )
 
 // SubscriberSource is the scanner's view of the subscription domain (its
@@ -32,12 +33,15 @@ type ReleaseChecker interface {
 	GetLatestRelease(ctx context.Context, owner, repo string) (string, error)
 }
 
-// ReleaseNotifier defines the email operations the scanner needs
+// ReleaseNotifier is how the scanner hands off a release notification. The
+// implementation publishes a command to the broker; the notifier service sends
+// the actual email, so nothing here touches SMTP.
 type ReleaseNotifier interface {
 	SendReleaseNotification(to, repo, tag, unsubscribeURL string) error
 }
 
-// Scanner periodically checks GitHub for new releases with goroutine and ticker and notifies subscribers
+// Scanner periodically checks GitHub for new releases and notifies subscribers.
+// It runs as a single background goroutine driven by a ticker.
 type Scanner struct {
 	subs     SubscriberSource
 	tracking ReleaseTrackingStore
@@ -47,7 +51,8 @@ type Scanner struct {
 	baseURL  string
 }
 
-// create a new Scanner
+// New creates a Scanner that polls GitHub every intervalSecs seconds. baseURL
+// is used to build the unsubscribe links embedded in the notifications.
 func New(subs SubscriberSource, tracking ReleaseTrackingStore, github ReleaseChecker, notifier ReleaseNotifier, intervalSecs int, baseURL string) *Scanner {
 	return &Scanner{
 		subs:     subs,

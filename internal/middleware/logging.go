@@ -8,15 +8,17 @@ import (
 	"github.com/google/uuid"
 )
 
-// HTTP header used to read/propagate a request id.
+// RequestIDHeader is the HTTP header used to read and propagate a request id.
 const RequestIDHeader = "X-Request-ID"
 
+// RequestLogger logs one structured line per HTTP request.
+//
 // Each request gets an id (taken from the X-Request-ID header if the client
 // sent one, otherwise generated), which is echoed back in the response header
 // so a client/log reader can correlate a request across systems.
-
+//
 // The logged fields give the RED signals — rate, errors (via status),
-// duration — at the log layer, complementing the Prometheus metrics
+// duration — at the log layer, complementing the Prometheus metrics.
 func RequestLogger() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()

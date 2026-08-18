@@ -15,10 +15,13 @@ type SMTPSender struct {
 	from string
 }
 
+// NewSMTPSender creates a sender for the given SMTP server. Empty user/pass
+// means no authentication (the local Mailpit setup).
 func NewSMTPSender(host, port, user, pass, from string) *SMTPSender {
 	return &SMTPSender{host: host, port: port, user: user, pass: pass, from: from}
 }
 
+// SendConfirmationEmail sends the subscribe-confirmation email.
 func (s *SMTPSender) SendConfirmationEmail(to, confirmURL string) error {
 	subject := "Confirm your GitHub release subscription"
 	body := fmt.Sprintf(
@@ -28,6 +31,7 @@ func (s *SMTPSender) SendConfirmationEmail(to, confirmURL string) error {
 	return s.sendEmail(to, subject, body)
 }
 
+// SendReleaseNotification sends the new-release email for a repo.
 func (s *SMTPSender) SendReleaseNotification(to, repo, tag, unsubscribeURL string) error {
 	subject := fmt.Sprintf("New release: %s %s", repo, tag)
 	body := fmt.Sprintf(

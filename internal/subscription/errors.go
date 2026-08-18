@@ -22,6 +22,7 @@ type DomainError struct {
 	Message string
 }
 
+// Error implements the error interface.
 func (e *DomainError) Error() string { return e.Message }
 
 // Predeclared sentinels for the well-known failure modes.

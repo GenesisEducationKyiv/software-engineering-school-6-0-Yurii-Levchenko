@@ -1,9 +1,10 @@
 package handler
 
 import (
+	"net/http"
+
 	"github-release-notifier/internal/metrics"
 	"github-release-notifier/internal/subscription"
-	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus"
@@ -14,7 +15,7 @@ type Handler struct {
 	svc *subscription.Service
 }
 
-// create a new Handler
+// New creates a Handler backed by the subscription service.
 func New(svc *subscription.Service) *Handler {
 	return &Handler{svc: svc}
 }
@@ -87,7 +88,7 @@ func (h *Handler) handleTokenAction(
 
 // GetSubscriptions handles GET /api/subscriptions?email={email}
 func (h *Handler) GetSubscriptions(c *gin.Context) {
-	email := c.Query("email") // Like request.GET.get('email') in Django
+	email := c.Query("email")
 	if email == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "email query parameter is required"})
 		return

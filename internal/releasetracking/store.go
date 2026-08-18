@@ -27,6 +27,8 @@ func NewStore(db *sqlx.DB) *Store {
 	return &Store{db: db}
 }
 
+// GetRepoTracking returns the tracking row for a repo, or (nil, nil) if the
+// repo has never been scanned.
 func (s *Store) GetRepoTracking(repo string) (*Repository, error) {
 	var rec Repository
 	query := `SELECT * FROM repositories WHERE repo = $1`

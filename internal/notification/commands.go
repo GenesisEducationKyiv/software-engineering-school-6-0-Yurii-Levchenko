@@ -11,6 +11,7 @@ type ConfirmationRequest struct {
 	ConfirmURL string `json:"confirm_url"`
 }
 
+// ReleaseRequest is the release-notification command carried over the broker.
 type ReleaseRequest struct {
 	To             string `json:"to"`
 	Repo           string `json:"repo"`

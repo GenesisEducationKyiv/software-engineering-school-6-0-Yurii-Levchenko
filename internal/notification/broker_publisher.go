@@ -60,6 +60,9 @@ func (p *BrokerPublisher) Close() error {
 	return nil
 }
 
+// SendReleaseNotification publishes a release-notification command. The
+// MessageId is deterministic per (repo, tag, subscriber) so a re-publish is
+// deduplicated by the consumer instead of sending a second email.
 func (p *BrokerPublisher) SendReleaseNotification(to, repo, tag, unsubscribeURL string) error {
 	id := fmt.Sprintf("release:%s:%s:%s", repo, tag, path.Base(unsubscribeURL))
 	return p.publish(RoutingRelease, id,
