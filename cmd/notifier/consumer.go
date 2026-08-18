@@ -33,6 +33,8 @@ type Consumer struct {
 	backoff     time.Duration // wait between attempts
 }
 
+// NewConsumer creates a Consumer with the default retry budget for transient
+// SMTP failures.
 func NewConsumer(sender emailSender, dedup deduper) *Consumer {
 	return &Consumer{sender: sender, dedup: dedup, maxAttempts: 3, backoff: 500 * time.Millisecond}
 }

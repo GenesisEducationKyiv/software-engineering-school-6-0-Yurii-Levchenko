@@ -3,8 +3,9 @@ package subscription
 import (
 	"context"
 	"fmt"
-	"github-release-notifier/internal/repospec"
 	"regexp"
+
+	"github-release-notifier/internal/repospec"
 
 	"github.com/google/uuid"
 )
@@ -57,7 +58,8 @@ type Service struct {
 	baseURL string
 }
 
-// creates a new Service
+// New creates a Service wired to its stores, the GitHub client and the saga
+// starter. baseURL is used to build the confirm/unsubscribe links.
 func New(subs SubscriptionStore, tracker RepoTracker, github GitHubClient, saga sagaStarter, baseURL string) *Service {
 	return &Service{
 		subs:    subs,
@@ -71,7 +73,8 @@ func New(subs SubscriptionStore, tracker RepoTracker, github GitHubClient, saga 
 // email validation pattern
 var emailRegex = regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
 
-// checks if email address is valid
+// ValidateEmail reports whether email is syntactically acceptable. It is a
+// pragmatic check, not full RFC 5322 validation.
 func ValidateEmail(email string) bool {
 	return emailRegex.MatchString(email)
 }
@@ -159,7 +162,7 @@ func (s *Service) Confirm(token string) error {
 	return nil
 }
 
-// unsubscription logic
+// Unsubscribe removes the subscription identified by token.
 func (s *Service) Unsubscribe(token string) error {
 	sub, err := s.subs.GetSubscriptionByToken(token)
 	if err != nil {

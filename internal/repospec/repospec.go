@@ -25,6 +25,7 @@ func ParseRepoSpec(s string) (RepoSpec, error) {
 	return RepoSpec{Owner: parts[0], Name: parts[1]}, nil
 }
 
+// String renders the spec back to its canonical "owner/name" form.
 func (r RepoSpec) String() string {
 	return r.Owner + "/" + r.Name
 }

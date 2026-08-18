@@ -3,8 +3,9 @@ package githubgateway
 import (
 	"context"
 	"fmt"
-	"github-release-notifier/internal/metrics"
 	"log/slog"
+
+	"github-release-notifier/internal/metrics"
 )
 
 // Cache values for repo_exists results. We serialize booleans as

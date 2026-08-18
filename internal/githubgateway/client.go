@@ -14,7 +14,8 @@ type Client struct {
 	httpClient *http.Client
 }
 
-// create a new GitHub API client
+// New creates a GitHub API client authenticated with the given token. An
+// empty token means unauthenticated requests (subject to a lower rate limit).
 func New(token string) *Client {
 	return &Client{
 		token: token,
