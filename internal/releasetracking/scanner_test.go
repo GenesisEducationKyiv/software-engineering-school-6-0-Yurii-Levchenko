@@ -222,7 +222,7 @@ func TestRecordAndNotify_RecordsTagAndNotifiesAll(t *testing.T) {
 	}
 }
 
-func TestRecordAndNotify_RecordFails_NoNotificationsSent(t *testing.T) {
+func TestRecordAndNotify_RecordFails_NotificationsStillSent(t *testing.T) {
 	s, subs, tracking, _, notifier := newScanner()
 	tracking.recordErr = errors.New("db error")
 	subs.subscribersByRepo["golang/go"] = []subscription.Subscriber{
@@ -231,15 +231,20 @@ func TestRecordAndNotify_RecordFails_NoNotificationsSent(t *testing.T) {
 
 	s.recordAndNotify("golang/go", "v1.22.0")
 
-	// Function bails out after the record error — without persisting the
-	// new tag we shouldn't be telling users it's released.
-	if len(notifier.sent) != 0 {
-		t.Errorf("sent %d, want 0 (must abort before notifying)", len(notifier.sent))
+	// Notify-then-record: the notification is published first, so a failure to
+	// persist the tag afterwards does not swallow it. The tag stays behind and
+	// the next cycle re-publishes; dedup on MessageId absorbs the duplicate.
+	if len(notifier.sent) != 1 {
+		t.Errorf("sent %d, want 1 (publish happens before the tag is recorded)", len(notifier.sent))
+	}
+	if tracking.recorded["golang/go"] != "" {
+		t.Errorf("recorded = %q, want empty (record failed, tag must stay behind)",
+			tracking.recorded["golang/go"])
 	}
 }
 
-func TestRecordAndNotify_OneRecipientFails_ContinuesOthers(t *testing.T) {
-	s, subs, _, _, notifier := newScanner()
+func TestRecordAndNotify_OneRecipientFails_ContinuesOthersAndHoldsTag(t *testing.T) {
+	s, subs, tracking, _, notifier := newScanner()
 	subs.subscribersByRepo["golang/go"] = []subscription.Subscriber{
 		{Email: "a@b.com", Token: "tok-A"},
 		{Email: "broken@b.com", Token: "tok-B"},
@@ -253,23 +258,60 @@ func TestRecordAndNotify_OneRecipientFails_ContinuesOthers(t *testing.T) {
 		t.Errorf("sent %d, want 2 (broken@b.com should be skipped, others should still go through)",
 			len(notifier.sent))
 	}
+	// The tag advances only as proof that EVERY subscriber was published to.
+	// One failure holds it back so the next cycle retries the whole repo.
+	if tracking.recorded["golang/go"] != "" {
+		t.Errorf("recorded = %q, want empty (a failed recipient must hold the tag back)",
+			tracking.recorded["golang/go"])
+	}
 }
 
-func TestRecordAndNotify_SubscribersFetchFails_NoNotificationsSent(t *testing.T) {
+func TestRecordAndNotify_SubscribersFetchFails_TagNotAdvanced(t *testing.T) {
 	s, subs, tracking, _, notifier := newScanner()
 	subs.subscribersErr = errors.New("db error")
 
 	s.recordAndNotify("golang/go", "v1.22.0")
 
-	// Tag IS persisted before subscribers are fetched — that's actually
-	// fine, the next cycle will see "tag unchanged" and skip. But no
-	// emails should go out on this cycle.
-	if tracking.recorded["golang/go"] != "v1.22.0" {
-		t.Errorf("recorded = %q, want v1.22.0 (record happens before subscriber fetch)",
+	// We never learned who to notify, so we must NOT claim the release was
+	// handled. Advancing the tag here would silently drop the release: the
+	// next cycle would see "tag unchanged" and never retry.
+	if tracking.recorded["golang/go"] != "" {
+		t.Errorf("recorded = %q, want empty (subscriber fetch failed, release not handled)",
 			tracking.recorded["golang/go"])
 	}
 	if len(notifier.sent) != 0 {
 		t.Errorf("sent %d, want 0 on subscriber fetch error", len(notifier.sent))
+	}
+}
+
+// TestRecordAndNotify_RetriesWholeRepoAfterFailure is the regression test for
+// the dual-write fix: a cycle whose publish fails must leave the tag behind so
+// the next cycle re-publishes to everyone. Before the fix the tag was advanced
+// first, so a failure here lost the release permanently.
+func TestRecordAndNotify_RetriesWholeRepoAfterFailure(t *testing.T) {
+	s, subs, tracking, _, notifier := newScanner()
+	subs.subscribersByRepo["golang/go"] = []subscription.Subscriber{
+		{Email: "a@b.com", Token: "tok-A"},
+		{Email: "b@b.com", Token: "tok-B"},
+	}
+	notifier.failFor["b@b.com"] = errors.New("broker unavailable")
+
+	// Cycle 1: the broker is down for one recipient — tag must stay behind.
+	s.recordAndNotify("golang/go", "v1.22.0")
+	if tracking.recorded["golang/go"] != "" {
+		t.Fatalf("after cycle 1: recorded = %q, want empty", tracking.recorded["golang/go"])
+	}
+
+	// Cycle 2: the broker recovered — everyone is published to again (the
+	// notifier dedups the repeat for a@b.com) and the tag finally advances.
+	delete(notifier.failFor, "b@b.com")
+	s.recordAndNotify("golang/go", "v1.22.0")
+
+	if tracking.recorded["golang/go"] != "v1.22.0" {
+		t.Errorf("after cycle 2: recorded = %q, want v1.22.0", tracking.recorded["golang/go"])
+	}
+	if len(notifier.sent) != 3 {
+		t.Errorf("sent %d, want 3 (1 from cycle 1 + 2 from the full retry)", len(notifier.sent))
 	}
 }
 
