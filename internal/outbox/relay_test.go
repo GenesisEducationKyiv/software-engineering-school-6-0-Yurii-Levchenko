@@ -13,6 +13,9 @@ type fakeStore struct {
 	fetched int
 	marked  []int64
 	markErr error
+	// markCtxErr records ctx.Err() as seen by MarkPublished, so a test can prove
+	// the bookkeeping write runs with cancellation detached.
+	markCtxErr error
 }
 
 func (f *fakeStore) FetchUnpublished(_ context.Context, _ int) ([]Message, error) {
@@ -24,7 +27,8 @@ func (f *fakeStore) FetchUnpublished(_ context.Context, _ int) ([]Message, error
 	return nil, nil
 }
 
-func (f *fakeStore) MarkPublished(_ context.Context, id int64) error {
+func (f *fakeStore) MarkPublished(ctx context.Context, id int64) error {
+	f.markCtxErr = ctx.Err()
 	if f.markErr != nil {
 		return f.markErr
 	}
@@ -98,5 +102,27 @@ func TestRelay_drain_continuesWhenMarkFails(t *testing.T) {
 	// and the consumer dedups, so a mark error must not stop delivery.
 	if len(pub.published) != 2 {
 		t.Fatalf("published = %v, want 2 messages", pub.published)
+	}
+}
+
+// TestRelay_drain_marksPublishedAfterCancellation guards the shutdown behavior:
+// once a message is in the broker, stamping published_at must happen even if the
+// relay's context was canceled. Otherwise every restart leaves ghost rows that
+// look exactly like a real failure.
+func TestRelay_drain_marksPublishedAfterCancellation(t *testing.T) {
+	store := &fakeStore{batches: [][]Message{makeMessages("a")}}
+	pub := &fakePub{}
+	r := NewRelay(store, pub, 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // simulate a shutdown already in progress
+
+	r.drain(ctx)
+
+	if len(store.marked) != 1 {
+		t.Fatalf("marked = %v, want [1] (bookkeeping must survive cancellation)", store.marked)
+	}
+	if store.markCtxErr != nil {
+		t.Errorf("MarkPublished saw ctx.Err() = %v, want nil (cancellation must be detached)", store.markCtxErr)
 	}
 }

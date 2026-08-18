@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -69,9 +70,14 @@ func run() error {
 	}
 	defer dedup.Close()
 
+	// ctx signals the consumer to stop; wg lets us wait until it actually has.
+	var wg sync.WaitGroup
+
 	consumer := NewConsumer(sender, dedup)
 	consumerErr := make(chan error, 1)
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		if err := consumer.Run(ctx, getEnv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")); err != nil {
 			consumerErr <- err
 		}
@@ -125,8 +131,33 @@ func run() error {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("notifier shutdown: %w", err)
 	}
+
+	// Wait for the consumer to finish its in-flight delivery, bounded by a
+	// timeout so a stuck send can't block the process from exiting.
+	waitForWorkers(&wg, consumerShutdownTimeout)
 	slog.Info("Notifier stopped")
 	return nil
+}
+
+// consumerShutdownTimeout bounds how long run() waits for the AMQP consumer
+// after cancellation.
+const consumerShutdownTimeout = 10 * time.Second
+
+// waitForWorkers blocks until every background worker has returned or timeout
+// elapses, whichever comes first.
+func waitForWorkers(wg *sync.WaitGroup, timeout time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		slog.Info("Background workers stopped")
+	case <-time.After(timeout):
+		slog.Warn("Background workers did not stop in time, exiting anyway", "timeout", timeout)
+	}
 }
 
 func getEnv(key, fallback string) string {
